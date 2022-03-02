@@ -1,0 +1,43 @@
+{
+  "name": "tpu-client",
+  "version": "1.0.5",
+  "main": "lib/index.js",
+  "author": " <lmvanderzande@gmail.com>",
+  "license": "MIT",
+  "dependencies": {
+    "@solana/web3.js": "^1.36.0",
+    "bs58": "^5.0.0",
+    "denque": "^2.0.1",
+    "dgram": "^1.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^17.0.21",
+    "@typescript-eslint/eslint-plugin": "^5.13.0",
+    "@typescript-eslint/parser": "^5.13.0",
+    "eslint": "^8.10.0",
+    "eslint-config-prettier": "^8.4.0",
+    "eslint-plugin-prettier": "^4.0.0",
+    "prettier": "^2.5.1",
+    "ts-node": "^10.6.0",
+    "typescript": "^4.6.2"
+  },
+  "scripts": {
+    "build": "ts-node build/index.ts",
+    "prettify": "prettier --check './src/**/*.ts'",
+    "prettify:fix": "prettier --write './src/**/*.ts'",
+    "lint": "eslint . --ext ts --quiet",
+    "lint:fix": "eslint . --ext ts --fix"
+  },
+  "directories": {
+    "lib": "lib"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lmvdz/tpu-client.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lmvdz/tpu-client/issues"
+  },
+  "homepage": "https://github.com/lmvdz/tpu-client#readme",
+  "description": ""
+}
