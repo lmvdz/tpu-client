@@ -1,4 +1,8 @@
 # TPU Client
+
+Send transactions straight to the TPU Leaders
+
+
 ```
 yarn install
 yarn build
