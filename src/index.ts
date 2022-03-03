@@ -10,7 +10,7 @@ export class LeaderTpuCache {
     slots_in_epoch: number;
     last_epoch_info_slot: number;
     leaders: Array<PublicKey>;
-    constructor(connection: Connection, startSlot: number) {
+    private constructor(connection: Connection, startSlot: number) {
         this.connection = connection;
         this.first_slot = startSlot;
     }
@@ -87,19 +87,38 @@ export const MAX_SLOT_SKIP_DISTANCE = 48;
 export const DEFAULT_FANOUT_SLOTS = 12;
 export const MAX_FANOUT_SLOTS = 100;
 
+
 export class RecentLeaderSlots {
     recent_slots: Denque;
+
+    //@ts-check
+    /**
+     * 
+     * @param current_slot {number}
+     */
     constructor(current_slot: number) {
         this.recent_slots = new Denque();
         this.recent_slots.push(current_slot);
     }
+
+    //@ts-check
+    /**
+     * 
+     * @param current_slot {number}
+     */
     recordSlot(current_slot: number) {
         this.recent_slots.push(current_slot);
         while(this.recent_slots.length > 12) {
             this.recent_slots.pop();
         }
     }
-    estimatedCurrentSlot() {
+
+    //@ts-check
+    /**
+     * 
+     * @returns {number}
+     */
+    estimatedCurrentSlot() : number {
         if (this.recent_slots.isEmpty()) {
             throw new Error('recent slots is empty');
         }
@@ -117,19 +136,36 @@ export interface TpuClientConfig {
     fanoutSlots: number
 }
 
+
 export class TpuClient {
     sendSocket: dgram.Socket;
     fanoutSlots: number;
     leaderTpuService: LeaderTpuService;
     exit: boolean;
     connection: Connection;
-    constructor(connection: Connection, config: TpuClientConfig = { fanoutSlots: DEFAULT_FANOUT_SLOTS }) {
+
+    //@ts-check
+    /**
+     * 
+     * @param connection {Connection}
+     * @param config {TpuClientConfig}
+     */
+    private constructor(connection: Connection, config: TpuClientConfig = { fanoutSlots: DEFAULT_FANOUT_SLOTS }) {
         this.connection = connection;
         this.exit = false;
         this.sendSocket = dgram.createSocket('udp4');
         this.fanoutSlots = Math.max( Math.min(config.fanoutSlots, MAX_FANOUT_SLOTS), 1 );
         console.log('started tpu client');
     }
+    
+    //@ts-check
+    /**
+     * 
+     * @param connection {Connection}
+     * @param websocketUrl {string}
+     * @param config {TpuClientConfig}
+     * @returns {Promise<TpuClient>}
+     */
     static load(connection: Connection, websocketUrl = '', config: TpuClientConfig = { fanoutSlots: DEFAULT_FANOUT_SLOTS }) : Promise<TpuClient> {
         return new Promise((resolve) => {
             const tpuClient = new TpuClient(connection, config);
@@ -139,6 +175,14 @@ export class TpuClient {
             });
         });
     }
+
+    //@ts-check
+    /**
+     * 
+     * @param transaction {Transaction}
+     * @param signers {Array<Signer>}
+     * @returns {Promise<string>}
+     */
     async sendTransaction(transaction: Transaction, signers: Array<Signer>) : Promise<string> {
         if (transaction.nonceInfo) {
             transaction.sign(...signers);
@@ -149,6 +193,13 @@ export class TpuClient {
         const rawTransaction = transaction.serialize();
         return this.sendRawTransaction(rawTransaction);
     }
+
+    //@ts-check
+    /**
+     * 
+     * @param rawTransaction {Buffer | number[] | Uint8ARray}
+     * @returns {Promise<string>}
+     */
     async sendRawTransaction(rawTransaction: Buffer | number[] | Uint8Array) : Promise<string> {
         return new Promise((resolve, reject) => {
             this.leaderTpuService.leaderTpuSockets(this.fanoutSlots).then((tpu_addresses) => {
@@ -174,9 +225,22 @@ export class LeaderTpuService {
     subscription: number | null;
     connection: Connection;
 
-    constructor(connection : Connection) {
+    //@ts-check
+    /**
+     * 
+     * @param connection {Connection}
+     */
+    private constructor(connection : Connection) {
         this.connection = connection;
     }
+
+    //@ts-check
+    /**
+     * 
+     * @param connection {Connection}
+     * @param websocket_url {string}
+     * @returns {Promise<LeaderTpuService}
+     */
     static load(connection : Connection, websocket_url = '') : Promise<LeaderTpuService> {
         return new Promise((resolve) => {
             const leaderTpuService = new LeaderTpuService(connection);
@@ -201,9 +265,21 @@ export class LeaderTpuService {
         });
         
     }
-    leaderTpuSockets(fanout_slots: number) {
+
+    //@ts-check
+    /**
+     * 
+     * @param fanout_slots {number}
+     * @returns {Promise<string[]>}
+     */
+    leaderTpuSockets(fanout_slots: number) : Promise<string[]> {
         return this.leaderTpuCache.getLeaderSockets(fanout_slots);
     }
+
+    //@ts-check
+    /**
+     * @returns {void}
+     */
     async run() {
         const last_cluster_refresh = Date.now();
         let sleep_ms = 1000;
@@ -245,19 +321,47 @@ export class LeaderTpuService {
 export class TpuConnection extends Connection {
     tpuClient: TpuClient;
 
-    constructor(endpoint : string, commitmentOrConfig?: Commitment | ConnectionConfig) {
+    //@ts-check
+    /**
+     * 
+     * @param endpoint {string}
+     * @param commitmentOrConfig {Commitment | ConnectionConfig}
+     */
+    private constructor(endpoint : string, commitmentOrConfig?: Commitment | ConnectionConfig) {
         super(endpoint, commitmentOrConfig);
     }
 
-    sendTransaction(transaction: Transaction, signers: Signer[]): Promise<string> {
+    //@ts-check
+    /**
+     * 
+     * @param transaction {Transaction}
+     * @param signers {Array<Signer>}
+     * @returns {Promise<string>}
+     */
+    sendTransaction(transaction: Transaction, signers: Array<Signer>): Promise<string> {
         return this.tpuClient.sendTransaction(transaction, signers);
     }
 
-    sendRawTransaction(rawTransaction: Buffer | number[] | Uint8Array): Promise<string> {
+    //@ts-check
+    /**
+     * 
+     * @param rawTransaction {Buffer | Array<number> | Uint8Array}
+     * @returns {Promise<string>}
+     */
+    sendRawTransaction(rawTransaction: Buffer | Array<number> | Uint8Array): Promise<string> {
         return this.tpuClient.sendRawTransaction(rawTransaction);
     }
 
 
+    ///@ts-check
+    /**
+     * 
+     * @param connection {TpuConnection}
+     * @param transaction {Transaction}
+     * @param signers {Array<Signer>}
+     * @param options {ConfirmOptions}
+     * @returns {Promise<TransactionSignature>}
+     */
     async sendAndConfirmTransaction(connection: TpuConnection, transaction: Transaction, signers: Array<Signer>, options?: ConfirmOptions) : Promise<TransactionSignature> {
         const signature = await this.sendTransaction(transaction, signers);
         const status = (await connection.confirmTransaction(signature, options.commitment)).value;
@@ -267,7 +371,15 @@ export class TpuConnection extends Connection {
         return signature;
     }
 
-    async sendAndConfirmRawTransaction(connection: TpuConnection, rawTransaction: Buffer | number[] | Uint8Array, options?: ConfirmOptions) {
+    //@ts-check
+    /**
+     * 
+     * @param connection {TpuConnection}
+     * @param rawTransaction {Buffer | Array<number> | Uint8Array}
+     * @param options {ConfirmOptions}
+     * @returns {Promise<string>}
+     */
+    async sendAndConfirmRawTransaction(connection: TpuConnection, rawTransaction: Buffer | Array<number> | Uint8Array, options?: ConfirmOptions) : Promise<string> {
         const signature = await this.sendRawTransaction(rawTransaction);
         const status = (await connection.confirmTransaction(signature, options.commitment)).value;
         if (status.err) {
@@ -276,7 +388,13 @@ export class TpuConnection extends Connection {
         return signature;
     }
 
-
+    //@ts-check
+    /**
+     * 
+     * @param endpoint {string}
+     * @param commitmentOrConfig {Commitment | ConnectionConfig}
+     * @returns {Promise<TpuConnection>}
+     */
     static load(endpoint: string, commitmentOrConfig?: Commitment | ConnectionConfig) : Promise<TpuConnection> {
         
         return new Promise((resolve) => {
