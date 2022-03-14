@@ -2,6 +2,7 @@
 
 Send transactions straight to the TPU Leaders.  
 This is a port of solana's rust tpu_client
+Sending transactions straight to TPU leaders can be helpful when the RPC you're using has a rate limit.
 
 # Building from Source
 
