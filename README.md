@@ -19,6 +19,7 @@ yarn add tpu-client
 # Usage
 
 ```ts
+const rpcurl = 'https://api.mainnet-beta.solana.com';
 const tpuConnection = TpuConnection.load(rpcurl, { commitment: 'processed' });
 
 (async () => {
