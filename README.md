@@ -1,7 +1,7 @@
 # TPU Client
 
 Send transactions straight to the TPU Leaders.  
-This is a port of solana's rust tpu_client
+This is a port of solana's rust tpu_client.  
 Sending transactions straight to TPU leaders can be helpful when the RPC you're using has a rate limit.
 
 # Building from Source
@@ -17,7 +17,10 @@ yarn build
 yarn add tpu-client
 ```
 
-# Usage
+# Usage  
+  
+You can use `TpuConnection` just like a @solana/web3.js `Connection` object. In fact `TpuConnection` is just an extension of `Connection`.  
+The only thing which is different is that when you use `sendTransaction` and `sendRawTransaction` it sends the transaction to the tpu leader, instead of the `rpcurl` RPC.  
 
 ```ts
 const rpcurl = 'https://api.mainnet-beta.solana.com';
