@@ -2,11 +2,20 @@
 
 Send transactions straight to the TPU Leaders
 
+# Building from Source
 
 ```
 yarn install
 yarn build
 ```
+
+# Installation via NPM
+
+```
+yarn add tpu-client
+```
+
+# Usage
 
 ```ts
 const tpuConnection = TpuConnection.load(rpcurl, { commitment: 'processed' });
