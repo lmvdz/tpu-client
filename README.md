@@ -1,6 +1,7 @@
 # TPU Client
 
-Send transactions straight to the TPU Leaders
+Send transactions straight to the TPU Leaders.  
+This is a port of solana's rust tpu_client
 
 # Building from Source
 
