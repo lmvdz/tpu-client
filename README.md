@@ -24,9 +24,9 @@ The only thing which is different is that when you use `sendTransaction` and `se
 
 ```ts
 const rpcurl = 'https://api.mainnet-beta.solana.com';
-const tpuConnection = await TpuConnection.load(rpcurl, { commitment: 'processed' });
 
 (async () => {
+    const tpuConnection = await TpuConnection.load(rpcurl, { commitment: 'processed' });
     let tx = new Transaction();
     tx.add(instruction);
     tx.recentBlockhash = (await tpuConnection.getRecentBlockhash()).blockhash;
