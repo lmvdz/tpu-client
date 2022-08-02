@@ -24,7 +24,7 @@ The only thing which is different is that when you use `sendTransaction` and `se
 
 ```ts
 const rpcurl = 'https://api.mainnet-beta.solana.com';
-const tpuConnection = TpuConnection.load(rpcurl, { commitment: 'processed' });
+const tpuConnection = await TpuConnection.load(rpcurl, { commitment: 'processed' });
 
 (async () => {
     let tx = new Transaction();
