@@ -1,7 +1,8 @@
 import { Commitment, ConfirmOptions, Connection, ConnectionConfig, PublicKey, Signer, Transaction, TransactionSignature } from "@solana/web3.js";
 import { default as Denque } from 'denque';
-import dgram from 'dgram';
-import bs58 from 'bs58';
+import {QUICClient} from "@matrixai/quic";
+import * as peculiarWebcrypto from '@peculiar/webcrypto';
+import base58 from "bs58";
 
 export class LeaderTpuCache {
     leaderTpuMap: Map<string, string>;
@@ -35,7 +36,8 @@ export class LeaderTpuCache {
             const map = new Map<string, string>();
             this.connection.getClusterNodes().then(contactInfo => {
                 contactInfo.forEach(contactInfo => {
-                    map.set(contactInfo.pubkey, contactInfo.tpu);
+                    // @ts-ignore
+                    map.set(contactInfo.pubkey, contactInfo.tpuQuic);
                 });
                 resolve(map);
             }).catch(error => {
@@ -138,7 +140,6 @@ export interface TpuClientConfig {
 
 
 export class TpuClient {
-    sendSocket: dgram.Socket;
     fanoutSlots: number;
     leaderTpuService: LeaderTpuService;
     exit: boolean;
@@ -153,7 +154,6 @@ export class TpuClient {
     private constructor(connection: Connection, config: TpuClientConfig = { fanoutSlots: DEFAULT_FANOUT_SLOTS }) {
         this.connection = connection;
         this.exit = false;
-        this.sendSocket = dgram.createSocket('udp4');
         this.fanoutSlots = Math.max( Math.min(config.fanoutSlots, MAX_FANOUT_SLOTS), 1 );
         console.log('started tpu client');
     }
@@ -203,16 +203,38 @@ export class TpuClient {
     async sendRawTransaction(rawTransaction: Buffer | number[] | Uint8Array) : Promise<string> {
         return new Promise((resolve, reject) => {
             this.leaderTpuService.leaderTpuSockets(this.fanoutSlots).then((tpu_addresses) => {
-                tpu_addresses.forEach(tpu_address => {
-                    this.sendSocket.send(rawTransaction, parseInt(tpu_address.split(':')[1]), tpu_address.split(':')[0], (error) => {
-                        if (!error) {
-                            const message = Transaction.from(rawTransaction);
-                            resolve(bs58.encode(message.signature));
-                        } else {
-                            console.error(error);
-                            reject(error);
-                        }
-                    });
+                tpu_addresses.forEach(async tpu_address => {
+
+
+                    try {
+                        const webcrypto = new peculiarWebcrypto.Crypto();
+                        const client = await QUICClient.createQUICClient({
+                                host: tpu_address.split(':')[0],
+                                port: parseInt(tpu_address.split(':')[1]),
+                                crypto: {
+                                    ops: {
+                                        randomBytes: async (data: ArrayBuffer): Promise<void> => {
+                                            webcrypto.getRandomValues(new Uint8Array(data));
+                                        },
+                                    },
+                                }
+                            }
+                        );
+                        const clientStream = client.connection.newStream();
+                        const writer = clientStream.writable.getWriter();
+                        // @ts-ignore
+                        await writer.write(rawTransaction.buffer);
+                        await writer.close();
+                        const message = Transaction.from(rawTransaction);
+                        resolve(base58.encode(message.signature));
+
+                    } catch (error) {
+                        console.error('Failed to send transaction to TPU', error);
+                        reject(error.message);
+                    }
+
+                    console.log(tpu_address);
+
                 });
             });
         });
