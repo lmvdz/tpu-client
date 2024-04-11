@@ -207,12 +207,6 @@ export class TpuClient {
 
 
                     try {
-                        const arrayBuffer = new ArrayBuffer(rawTransaction.length);
-                        const uint8Array = new Uint8Array(arrayBuffer);
-                        for (let i = 0; i < rawTransaction.length; ++i) {
-                            uint8Array[i] = rawTransaction[i];
-                        }
-
                         const webcrypto = new peculiarWebcrypto.Crypto();
                         const client = await QUICClient.createQUICClient({
                                 host: tpu_address.split(':')[0],
@@ -228,7 +222,8 @@ export class TpuClient {
                         );
                         const clientStream = client.connection.newStream();
                         const writer = clientStream.writable.getWriter();
-                        await writer.write(uint8Array);
+                        // @ts-ignore
+                        await writer.write(rawTransaction.buffer);
                         await writer.close();
                         const message = Transaction.from(rawTransaction);
                         resolve(base58.encode(message.signature));
