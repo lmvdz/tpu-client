@@ -1,9 +1,8 @@
 import { Commitment, ConfirmOptions, Connection, ConnectionConfig, PublicKey, Signer, Transaction, TransactionSignature } from "@solana/web3.js";
 import { default as Denque } from 'denque';
-import dgram from 'dgram';
-import bs58 from 'bs58';
 import {QUICClient} from "@matrixai/quic";
 import * as peculiarWebcrypto from '@peculiar/webcrypto';
+import base58 from "bs58";
 
 export class LeaderTpuCache {
     leaderTpuMap: Map<string, string>;
@@ -226,13 +225,17 @@ export class TpuClient {
                                     },
                                 }
                             }
-                        )
+                        );
                         const clientStream = client.connection.newStream();
                         const writer = clientStream.writable.getWriter();
                         await writer.write(uint8Array);
                         await writer.close();
+                        const message = Transaction.from(rawTransaction);
+                        resolve(base58.encode(message.signature));
+
                     } catch (error) {
                         console.error('Failed to send transaction to TPU', error);
+                        reject(error.message);
                     }
 
                     console.log(tpu_address);
