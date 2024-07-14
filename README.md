@@ -1,4 +1,6 @@
-# TPU Client
+# TPU (QUIC enabled) Client
+
+CURRENTLY WAITING FOR QUIC LIBRARY TO ADD SUPPORT FOR CUSTOM SERVERNAM
 
 Send transactions straight to the TPU Leaders.  
 This is a port of solana's rust tpu_client.  
