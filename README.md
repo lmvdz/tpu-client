@@ -1,6 +1,8 @@
 # TPU (QUIC enabled) Client
 
-CURRENTLY WAITING FOR QUIC LIBRARY TO ADD SUPPORT FOR CUSTOM SERVERNAM
+CURRENTLY WAITING FOR QUIC LIBRARY TO ADD SUPPORT FOR CUSTOM SERVERNAME
+
+-----------------------------------------------------------------------------------------
 
 Send transactions straight to the TPU Leaders.  
 This is a port of solana's rust tpu_client.  
