@@ -1,8 +1,13 @@
-import { Commitment, ConfirmOptions, Connection, ConnectionConfig, PublicKey, Signer, Transaction, TransactionSignature } from "@solana/web3.js";
+import { Commitment, ConfirmOptions, Connection, ConnectionConfig, PublicKey, SendOptions, SignatureResult, Signer, Transaction, TransactionExpiredBlockheightExceededError, TransactionSignature, VersionedTransaction } from "@solana/web3.js";
 import { default as Denque } from 'denque';
 import {QUICClient} from "@matrixai/quic";
+import { default as Logger } from '@matrixai/logger';
 import * as peculiarWebcrypto from '@peculiar/webcrypto';
 import base58 from "bs58";
+import selfsigned from 'selfsigned';
+
+// create self signed pems for quic
+const pems = selfsigned.generate([{name: 'commonName', value: 'Solana node'}, { name: "subjectAltName", value: [{ type: 7, value: "0.0.0.0" }]}], { days: 365, algorithm: 'ed25519', keySize: 2048 });
 
 export class LeaderTpuCache {
     leaderTpuMap: Map<string, string>;
@@ -147,7 +152,6 @@ export class TpuClient {
 
     //@ts-check
     /**
-     * 
      * @param connection {Connection}
      * @param config {TpuClientConfig}
      */
@@ -160,7 +164,6 @@ export class TpuClient {
     
     //@ts-check
     /**
-     * 
      * @param connection {Connection}
      * @param websocketUrl {string}
      * @param config {TpuClientConfig}
@@ -178,20 +181,171 @@ export class TpuClient {
 
     //@ts-check
     /**
-     * 
      * @param transaction {Transaction}
      * @param signers {Array<Signer>}
      * @returns {Promise<string>}
      */
-    async sendTransaction(transaction: Transaction, signers: Array<Signer>) : Promise<string> {
+    async sendTransaction(transaction: Transaction | VersionedTransaction, signersOrOptions: Array<Signer> | SendOptions, _options?: SendOptions) : Promise<TransactionSignature> {
+        if ('version' in transaction) {
+            if (signersOrOptions && Array.isArray(signersOrOptions)) {
+              throw new Error('Invalid arguments');
+            }
+            const rawTransaction = transaction.serialize();
+            return this.sendRawTransaction(rawTransaction);
+        }
+        if (signersOrOptions === undefined || !Array.isArray(signersOrOptions)) {
+            throw new Error('Invalid arguments');
+        }
+        const signers = signersOrOptions;
         if (transaction.nonceInfo) {
             transaction.sign(...signers);
         } else {
-            transaction.recentBlockhash = (await this.connection.getRecentBlockhash()).blockhash;
+            const latestBh = (await this.connection.getLatestBlockhash());
+            transaction.recentBlockhash = latestBh.blockhash;
             transaction.sign(...signers);
         }
         const rawTransaction = transaction.serialize();
         return this.sendRawTransaction(rawTransaction);
+    }
+
+    /**
+     * 
+     * @param transaction 
+     * @param signersOrOptions 
+     * @param _options 
+     * @returns 
+     */
+    async sendAbortableTransaction(transaction: Transaction | VersionedTransaction, signersOrOptions: Array<Signer> | SendOptions, _options?: SendOptions) : Promise<{ signature: TransactionSignature, abortControllers: AbortController[], blockhash?: { blockhash: string, lastValidBlockHeight: number }}> {
+        if ('version' in transaction) {
+            if (signersOrOptions && Array.isArray(signersOrOptions)) {
+              throw new Error('Invalid arguments');
+            }
+            const rawTransaction = transaction.serialize();
+            return this.sendAbortableRawTransaction(rawTransaction);
+        }
+        if (signersOrOptions === undefined || !Array.isArray(signersOrOptions)) {
+            throw new Error('Invalid arguments');
+        }
+        const signers = signersOrOptions;
+        if (transaction.nonceInfo) {
+            transaction.sign(...signers);
+            const rawTransaction = transaction.serialize();
+            const { signature, abortControllers } = await this.sendAbortableRawTransaction(rawTransaction);
+            return { signature, abortControllers };
+        } else {
+            const latestBh = (await this.connection.getLatestBlockhash());
+            transaction.recentBlockhash = latestBh.blockhash;
+            transaction.sign(...signers);
+
+            const rawTransaction = transaction.serialize();
+            const { signature, abortControllers } = await this.sendAbortableRawTransaction(rawTransaction);
+            return { signature, abortControllers, blockhash: { ...latestBh } };
+        }
+        
+    }
+
+
+    /**
+     * @param tpu_address
+     * @param logger 
+     * @param webcrypto 
+     * @param rawTransaction 
+     * @param abortController 
+     * @param retryCount 
+     * @param retryMaxCount 
+     * @returns 
+     */
+    async sendSignedRawTransactionToQuicAddress(tpu_address: string, logger: Logger, webcrypto: peculiarWebcrypto.Crypto, rawTransaction: Buffer | number[] | Uint8Array, abortController?: AbortController, retryCount = 0, retryMaxCount = 2) {
+        try {
+            if (retryCount > 0) {
+                console.log('retrying ' + tpu_address);
+            }
+            const client = await QUICClient.createQUICClient({
+                    logger,
+                    config: {
+                        key: pems.private,
+                        cert: pems.cert,
+                        verifyPeer: false,
+                        applicationProtos: ['solana-tpu']
+                    },
+                    host: tpu_address.split(':')[0],
+                    port: parseInt(tpu_address.split(':')[1]),
+                    crypto: {
+                        ops: {
+                            randomBytes: async (data: ArrayBuffer): Promise<void> => {
+                                webcrypto.getRandomValues(new Uint8Array(data));
+                            },
+                        },
+                    }
+                }
+            );
+            // solana-quic doesnt support bidirectional streams
+            const clientStream = client.connection.newStream('uni');
+            // console.log('getting stream writer', index);
+            const writer = clientStream.writable.getWriter();
+            // console.log('writing to stream', index);
+            await writer.write(Uint8Array.from(rawTransaction as Buffer));
+            await writer.close();
+            if (abortController) {
+                abortController.signal.addEventListener('abort', () => {
+                    if (writer) {
+                        if (!writer.closed) {
+                            writer.close();
+                        }
+                    }
+                    if (client) {
+                        client.destroy();
+                    }
+                });
+            }
+            // console.log('closed', index);
+        } catch (error) {
+            if (!abortController.signal.aborted) {
+
+                if (error.data.errorCode === 2) {
+                    console.error('connection refused', tpu_address);
+                } else if (error.data.errorCode === 11) {
+                    console.error('invalid token', tpu_address);
+                } else if (error.data.errorCode === 1) {
+                    console.error('internal error', tpu_address);
+                } else {
+                    console.error('error', tpu_address);
+                    console.error(error);
+                    console.error(new TextDecoder().decode(error.data.reason));
+                }
+
+                if (retryCount < retryMaxCount) {
+                    return await this.sendSignedRawTransactionToQuicAddress(tpu_address, logger, webcrypto, rawTransaction, abortController, retryCount+1, retryMaxCount);
+                } else {
+                    console.warn('max retry count', tpu_address);
+                }
+            }
+            
+        }
+    }
+
+
+    /**
+     * 
+     * @param rawTransaction 
+     * @returns 
+     */
+    async sendAbortableRawTransaction(rawTransaction: Buffer | number[] | Uint8Array) : Promise<{ signature: TransactionSignature, abortControllers: AbortController[] }> {
+        const message = Transaction.from(rawTransaction);
+        const signature = base58.encode(message.signature);
+        const tpu_addresses = await this.leaderTpuService.leaderTpuSockets(this.fanoutSlots);
+        const logger = new Logger(signature, 4);
+        const webcrypto = new peculiarWebcrypto.Crypto();
+        // console.log('sending abortable ' + `https://solscan.io/tx/${signature}` + ' via QUIC');
+        // console.log(tpu_addresses.length, 'addresses');
+        
+        const abortControllers = tpu_addresses.map((tpu_address) => {
+            const abortController = new AbortController();
+            this.sendSignedRawTransactionToQuicAddress(tpu_address, logger, webcrypto, rawTransaction, abortController);
+            return abortController;
+        });
+
+        return { signature, abortControllers };
     }
 
     //@ts-check
@@ -200,44 +354,19 @@ export class TpuClient {
      * @param rawTransaction {Buffer | number[] | Uint8ARray}
      * @returns {Promise<string>}
      */
-    async sendRawTransaction(rawTransaction: Buffer | number[] | Uint8Array) : Promise<string> {
-        return new Promise((resolve, reject) => {
-            this.leaderTpuService.leaderTpuSockets(this.fanoutSlots).then((tpu_addresses) => {
-                tpu_addresses.forEach(async tpu_address => {
+    async sendRawTransaction(rawTransaction: Buffer | number[] | Uint8Array) : Promise<TransactionSignature> {
 
-
-                    try {
-                        const webcrypto = new peculiarWebcrypto.Crypto();
-                        const client = await QUICClient.createQUICClient({
-                                host: tpu_address.split(':')[0],
-                                port: parseInt(tpu_address.split(':')[1]),
-                                crypto: {
-                                    ops: {
-                                        randomBytes: async (data: ArrayBuffer): Promise<void> => {
-                                            webcrypto.getRandomValues(new Uint8Array(data));
-                                        },
-                                    },
-                                }
-                            }
-                        );
-                        const clientStream = client.connection.newStream();
-                        const writer = clientStream.writable.getWriter();
-                        // @ts-ignore
-                        await writer.write(rawTransaction.buffer);
-                        await writer.close();
-                        const message = Transaction.from(rawTransaction);
-                        resolve(base58.encode(message.signature));
-
-                    } catch (error) {
-                        console.error('Failed to send transaction to TPU', error);
-                        reject(error.message);
-                    }
-
-                    console.log(tpu_address);
-
-                });
-            });
+        const message = Transaction.from(rawTransaction);
+        const signature = base58.encode(message.signature);
+        const tpu_addresses = await this.leaderTpuService.leaderTpuSockets(this.fanoutSlots);
+        const logger = new Logger(signature, 4);
+        const webcrypto = new peculiarWebcrypto.Crypto();
+        // console.log('sending ' + `https://solscan.io/tx/${signature}` + ' via QUIC');
+        // console.log(tpu_addresses.length, 'addresses');
+        tpu_addresses.forEach(async (tpu_address) => {
+            this.sendSignedRawTransactionToQuicAddress(tpu_address, logger, webcrypto, rawTransaction);
         });
+        return signature;
     }
 }
 
@@ -261,7 +390,7 @@ export class LeaderTpuService {
      * 
      * @param connection {Connection}
      * @param websocket_url {string}
-     * @returns {Promise<LeaderTpuService}
+     * @returns {Promise<LeaderTpuService>}
      */
     static load(connection : Connection, websocket_url = '') : Promise<LeaderTpuService> {
         return new Promise((resolve) => {
@@ -360,20 +489,38 @@ export class TpuConnection extends Connection {
      * @param signers {Array<Signer>}
      * @returns {Promise<string>}
      */
-    sendTransaction(transaction: Transaction, signers: Array<Signer>): Promise<string> {
-        return this.tpuClient.sendTransaction(transaction, signers);
+    sendTransaction(transaction: Transaction | VersionedTransaction, signers: Array<Signer> | SendOptions, sendOptions?: SendOptions): Promise<TransactionSignature> {
+        return this.tpuClient.sendTransaction(transaction, signers, sendOptions);
     }
 
-    //@ts-check
+    /**
+     * 
+     * @param transaction 
+     * @param signers 
+     * @param sendOptions 
+     * @returns 
+     */
+    sendAbortableTransaction(transaction: Transaction | VersionedTransaction, signers: Array<Signer> | SendOptions, sendOptions?: SendOptions): Promise<{ signature: TransactionSignature, abortControllers: AbortController[] }> {
+        return this.tpuClient.sendAbortableTransaction(transaction, signers, sendOptions);
+    }
+    
     /**
      * 
      * @param rawTransaction {Buffer | Array<number> | Uint8Array}
      * @returns {Promise<string>}
      */
-    sendRawTransaction(rawTransaction: Buffer | Array<number> | Uint8Array): Promise<string> {
+    sendRawTransaction(rawTransaction: Buffer | Array<number> | Uint8Array): Promise<TransactionSignature> {
         return this.tpuClient.sendRawTransaction(rawTransaction);
     }
 
+    /**
+     * 
+     * @param rawTransaction 
+     * @returns 
+     */
+    sendAbortableRawTransaction(rawTransaction: Buffer | Array<number> | Uint8Array) : Promise<{ signature: TransactionSignature, abortControllers: AbortController[] }> {
+        return this.tpuClient.sendAbortableRawTransaction(rawTransaction);
+    }
 
     ///@ts-check
     /**
@@ -384,11 +531,13 @@ export class TpuConnection extends Connection {
      * @param options {ConfirmOptions}
      * @returns {Promise<TransactionSignature>}
      */
-    async sendAndConfirmTransaction(connection: TpuConnection, transaction: Transaction, signers: Array<Signer>, options?: ConfirmOptions) : Promise<TransactionSignature> {
+    async sendAndConfirmTransaction(transaction: Transaction, signers: Array<Signer>, options?: ConfirmOptions) : Promise<TransactionSignature> {
         const signature = await this.sendTransaction(transaction, signers);
-        const status = (await connection.confirmTransaction(signature, options.commitment)).value;
+        const status = (await this.confirmTransaction(signature, options.commitment)).value;
         if (status.err) {
             throw new Error(`Transaction ${signature} failed (${JSON.stringify(status)})`);
+        } else {
+            console.log(`Transaction Confirmed https://solana.fm/tx/${signature}`);
         }
         return signature;
     }
@@ -401,13 +550,78 @@ export class TpuConnection extends Connection {
      * @param options {ConfirmOptions}
      * @returns {Promise<string>}
      */
-    async sendAndConfirmRawTransaction(connection: TpuConnection, rawTransaction: Buffer | Array<number> | Uint8Array, options?: ConfirmOptions) : Promise<string> {
+    async sendAndConfirmRawTransaction(rawTransaction: Buffer | Array<number> | Uint8Array, options?: ConfirmOptions) : Promise<TransactionSignature> {
         const signature = await this.sendRawTransaction(rawTransaction);
-        const status = (await connection.confirmTransaction(signature, options.commitment)).value;
+        const status = (await this.confirmTransaction(signature, options.commitment)).value;
         if (status.err) {
             throw new Error(`Transaction ${signature} failed (${JSON.stringify(status)})`);
+        } else {
+            console.log(`Transaction Confirmed https://solana.fm/tx/${signature}`);
         }
         return signature;
+    }
+
+    /**
+     * 
+     * @param transaction 
+     * @param signers 
+     * @param sendOptions 
+     * @returns 
+     */
+    async sendAndConfirmAbortableTransaction(transaction: Transaction | VersionedTransaction, signers: Array<Signer> | SendOptions, sendOptions?: SendOptions) : Promise<TransactionSignature>  {
+        const { signature, abortControllers, blockhash } = await this.tpuClient.sendAbortableTransaction(transaction, signers, sendOptions);
+        console.log(`sent tx: https://solana.fm/tx/${signature}`);
+        try {
+            if (!('version' in transaction)) {
+                let status: SignatureResult;
+                if (blockhash) {
+                    try {
+                        status = (await this.confirmTransaction({ signature, ...blockhash }, 'processed')).value;
+                    } catch (error) {
+                        if (error instanceof TransactionExpiredBlockheightExceededError) {
+                            return await this.sendAndConfirmAbortableTransaction(transaction, signers, sendOptions);
+                        }
+                    }
+                }  else {
+                    status = (await this.confirmTransaction(signature, 'processed')).value;
+                }
+                if (status.err === null) {
+                    console.log(`Transaction Processed https://solana.fm/tx/${signature}`);
+                    abortControllers.forEach(controller => controller.abort());
+                    return signature;
+                } else {
+                    console.error(status.err);
+                    abortControllers.forEach(controller => controller.abort());
+                }
+            }
+        } catch (error) {
+            console.error(error);
+        }
+        return signature;
+    }
+
+    /**
+     * 
+     * @param rawTransaction 
+     * @param blockhash 
+     * @returns 
+     */
+    async sendAndConfirmAbortableRawTransaction(rawTransaction: Buffer | Array<number> | Uint8Array, blockhash?: { blockhash: string, lastValidBlockHeight: number }) : Promise<TransactionSignature>  {
+        const { signature, abortControllers } = await this.tpuClient.sendAbortableRawTransaction(rawTransaction);
+        let status : SignatureResult;
+        if (blockhash) {
+            status = (await this.confirmTransaction({ signature, ...blockhash }, 'processed')).value;
+        } else {
+            status = (await this.confirmTransaction(signature, 'processed')).value;
+        }
+        if (status.err === null) {
+            console.log(`Transaction Processed https://solana.fm/tx/${signature}`);
+            abortControllers.forEach(controller => controller.abort());
+            return signature;
+        } else {
+            console.error(status.err);
+            abortControllers.forEach(controller => controller.abort());
+        }
     }
 
     //@ts-check
