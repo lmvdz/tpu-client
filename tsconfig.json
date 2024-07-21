@@ -1,8 +1,8 @@
 {
 	"compilerOptions": {
 		"types": ["node"],
-		"module": "commonjs",
-		"target": "es2019",
+		"module": "NodeNext",
+		"target": "ESNext",
 		"esModuleInterop": true,
 		"preserveConstEnums": true,
 		"sourceMap": true,
