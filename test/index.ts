@@ -6,9 +6,7 @@ import base58 from 'bs58';
 
 config();
 
-// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 const rpcurl = process.env.RPC_URL!;
-// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 const signer = Keypair.fromSecretKey(base58.decode(process.env.KEYPAIR!));
 
 (async () => {
@@ -16,7 +14,8 @@ const signer = Keypair.fromSecretKey(base58.decode(process.env.KEYPAIR!));
     const tpuConnection = await TpuConnection.load(rpcurl, { commitment: 'processed' });
     const tx = new Transaction();
     const instruction = SystemProgram.transfer({ fromPubkey: signer.publicKey, toPubkey: signer.publicKey, lamports: 1 });
-    tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000 }));
+    tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 }));
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 10_000 }));
     tx.add(instruction);
     console.log('sending tx');
     await tpuConnection.sendAndConfirmAbortableTransaction(tx, [signer]);
