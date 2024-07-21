@@ -266,8 +266,9 @@ export class TpuClient {
                         key: pems.private,
                         cert: pems.cert,
                         verifyPeer: false,
-                        applicationProtos: ['solana-tpu']
+                        applicationProtos: ['solana-tpu'],
                     },
+                    serverName: "server",
                     host: tpu_address.split(':')[0],
                     port: parseInt(tpu_address.split(':')[1]),
                     crypto: {
@@ -332,7 +333,7 @@ export class TpuClient {
      */
     async sendAbortableRawTransaction(rawTransaction: Buffer | number[] | Uint8Array) : Promise<{ signature: TransactionSignature, abortControllers: AbortController[] }> {
         const message = Transaction.from(rawTransaction);
-        const signature = base58.encode(message.signature);
+        const signature = base58.encode(Uint8Array.from(message.signature));
         const tpu_addresses = await this.leaderTpuService.leaderTpuSockets(this.fanoutSlots);
         const logger = new Logger(signature, 4);
         const webcrypto = new peculiarWebcrypto.Crypto();
@@ -357,7 +358,7 @@ export class TpuClient {
     async sendRawTransaction(rawTransaction: Buffer | number[] | Uint8Array) : Promise<TransactionSignature> {
 
         const message = Transaction.from(rawTransaction);
-        const signature = base58.encode(message.signature);
+        const signature = base58.encode(Uint8Array.from(message.signature));
         const tpu_addresses = await this.leaderTpuService.leaderTpuSockets(this.fanoutSlots);
         const logger = new Logger(signature, 4);
         const webcrypto = new peculiarWebcrypto.Crypto();

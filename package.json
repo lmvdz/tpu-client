@@ -5,7 +5,7 @@
   "author": " <lmvanderzande@gmail.com>",
   "license": "MIT",
   "dependencies": {
-    "@matrixai/quic": "^1.2.12",
+    "@matrixai/quic": "^1.3.0",
     "@peculiar/webcrypto": "^1.4.6",
     "@solana/web3.js": "^1.91.8",
     "bs58": "^5.0.0",
