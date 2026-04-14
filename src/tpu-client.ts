@@ -100,9 +100,12 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
   try {
     // 1. Identity / TLS cert.
     const tpuIdentity = await buildIdentity(opts.identity);
-    // buildIdentity already warns on ephemeral; no additional warn needed here.
-    // (The concern pseudocode re-warns — skip the duplicate to avoid double-printing
-    // since buildIdentity itself emits the warning unconditionally when ephemeral.)
+    if (tpuIdentity.ephemeral) {
+      console.warn(
+        '[tpu-client] No identity keypair supplied — using ephemeral Ed25519 key. ' +
+          'This identity is unstaked and will be first-dropped by validators under load.',
+      );
+    }
 
     // 2. Slot tracker (subscribes over rpcSubscriptions).
     const slotTracker = await createSlotTracker({

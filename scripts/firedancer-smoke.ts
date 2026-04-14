@@ -67,6 +67,7 @@ interface ProbeResult {
   reason?: string;
   expectedPubkey?: string;
   gotPubkey?: string;
+  upcomingSlots?: number;
 }
 
 async function probe(
@@ -120,6 +121,22 @@ async function main(): Promise<void> {
   const nodes = await rpc.getClusterNodes().send();
   console.log(`Total nodes: ${nodes.length}`);
 
+  // Pull the upcoming leader slot window so we can annotate each probe with
+  // "is this node actually going to lead soon?" — a reachability FAIL on a
+  // non-leader is noise; a FAIL on an upcoming leader is lost sends.
+  const slotHorizon = 5_000; // ~33 minutes of slots
+  const currentSlot = await rpc.getSlot({ commitment: 'processed' }).send();
+  const upcomingLeaders = await rpc
+    .getSlotLeaders(currentSlot, slotHorizon)
+    .send();
+  const leaderCount = new Map<string, number>();
+  for (const l of upcomingLeaders) {
+    leaderCount.set(String(l), (leaderCount.get(String(l)) ?? 0) + 1);
+  }
+  console.log(
+    `Leader horizon: next ${slotHorizon} slots (${Math.round((slotHorizon * 400) / 60_000)} min)`,
+  );
+
   const agaveNodes = nodes.filter(
     (n) => n.tpuQuic != null && !isFiredancerVersion(n.version) && n.version != null,
   );
@@ -143,14 +160,16 @@ async function main(): Promise<void> {
   ];
   for (let i = 0; i < probeTargets.length; i++) {
     const [label, n] = probeTargets[i]!;
+    const slots = leaderCount.get(String(n.pubkey)) ?? 0;
+    const leadTag = slots === 0 ? 'non-leader ' : `${slots}-slot lead`;
     process.stdout.write(
-      `[${i + 1}/${probeTargets.length}] ${label.padEnd(14)} ${n.pubkey} → ${n.tpuQuic}  `,
+      `[${i + 1}/${probeTargets.length}] ${label.padEnd(14)} ${leadTag.padEnd(12)} ${n.pubkey} → ${n.tpuQuic}  `,
     );
     const started = Date.now();
     const r = await probe(label, n.pubkey as Address, n.tpuQuic!, n.version);
     const took = Date.now() - started;
     process.stdout.write(`${r.ok ? 'ok' : 'FAIL'} (${took}ms)\n`);
-    results.push(r);
+    results.push({ ...r, upcomingSlots: slots });
   }
 
   console.log('\n=== RESULTS ===');
@@ -170,26 +189,26 @@ async function main(): Promise<void> {
   // Summary diagnosis
   const agaveOk = results.filter((r) => r.label === 'agave' && r.ok).length;
   const fdOk = results.filter((r) => r.label === 'frankendancer' && r.ok).length;
+  const failedLeaders = results.filter(
+    (r) => !r.ok && (r.upcomingSlots ?? 0) > 0,
+  );
   console.log('\n=== DIAGNOSIS ===');
-  console.log(`Agave pin success        : ${agaveOk}/3`);
-  console.log(`Frankendancer pin success: ${fdOk}/3`);
-  if (agaveOk === 0 && fdOk === 0) {
+  console.log(`Agave handshake success        : ${agaveOk}/3`);
+  console.log(`Frankendancer handshake success: ${fdOk}/3`);
+  if (failedLeaders.length === 0) {
     console.log(
-      'Neither Agave nor Frankendancer present a cert whose SPKI matches the gossip identity.',
+      'Any FAILs are on non-leader nodes in the next-slot horizon — ' +
+        'reachability noise, not lost sends.',
     );
+  } else {
     console.log(
-      'Conclusion: server cert pubkey != validator identity on Solana TPU QUIC.',
+      `WARNING: ${failedLeaders.length} FAIL(s) are on UPCOMING LEADERS — real lost sends:`,
     );
-    console.log(
-      'Action: relax pinning to "present cert, accept all" (match prior v1 behavior) OR',
-    );
-    console.log(
-      'investigate whether Solana uses a different pinning scheme (e.g., per-connection cert).',
-    );
-  } else if (agaveOk > 0 && fdOk === 0) {
-    console.log('Agave pins correctly; Frankendancer uses a different scheme.');
-  } else if (agaveOk > 0 && fdOk > 0) {
-    console.log('Both accept our pin. The original failure may be a stale node.');
+    for (const f of failedLeaders) {
+      console.log(
+        `  ${f.identity} (${f.upcomingSlots} slots in next horizon): ${f.reason}`,
+      );
+    }
   }
 }
 
