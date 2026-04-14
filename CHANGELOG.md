@@ -7,7 +7,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
-## 2.0.0-alpha.0 (unreleased)
+## 2.0.0-alpha.1 (unreleased)
+
+### Changed
+
+- **Cert pinning is now `'observe'` by default** (was effectively `'strict'` in alpha.0). Empirical mainnet probing (April 2026, 6-node comparative sample) revealed that 100% of Frankendancer validators and a meaningful fraction of Agave validators present server certs whose SPKI does **not** equal the gossip-advertised identity pubkey — likely due to per-connection ephemeral certs or load-balancer TLS termination. Strict pinning silently broke ~20%+ of the leader schedule.
+  - New option `CreateTpuClientOptions.pinMode: 'strict' | 'observe' | 'off'`, default `'observe'`.
+  - `observe` accepts the connection on SPKI mismatch but still emits `cert-pin-mismatch` TpuEvent for telemetry.
+  - `strict` preserves v2.0.0-alpha.0 behavior — safe for pure-Agave fleets that you know present identity-signed certs.
+  - `off` skips the SPKI check entirely; client cert is still presented for QoS.
+- Quarantine is now only populated by `strict`-mode mismatches (an `observe`-mode mismatch succeeded the handshake; quarantining it would lock the client out of legitimate leaders).
+- New exported pure function `evaluatePinDecision` — unit-testable pin-decision logic without a live QUIC handshake.
+
+## 2.0.0-alpha.0 (initial)
 
 ### Breaking
 

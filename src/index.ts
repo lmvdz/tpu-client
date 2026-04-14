@@ -4,6 +4,7 @@ export type {
   CreateTpuClientOptions,
   SendResult,
 } from './tpu-client.js';
+export type { PinMode } from './quic-sender.js';
 
 export { sendAndConfirmTpuTransactionFactory } from './confirm.js';
 export type {

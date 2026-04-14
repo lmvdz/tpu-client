@@ -13,12 +13,15 @@
  *   4. Attempts a QUIC handshake via openTpuQuicConn using an ephemeral identity.
  *   5. Prints result: identity, addr, success/failure reason.
  *
- * Firedancer version heuristic:
- *   The version field in getClusterNodes() is a free-form string. Currently:
- *     - Firedancer reports versions like "0.1.x" or "fd1.x" (check contains "fd" prefix or "firedancer")
- *     - Frankendancer (hybrid) reports "frankendancer" or has version prefix "fd"
- *   We use a case-insensitive match for: "firedancer", "frankendancer", or prefix "fd\d"
- *   This heuristic will need updating as the ecosystem evolves.
+ * Firedancer version heuristic (verified empirically against mainnet-beta, April 2026):
+ *   - Agave validators report versions starting with "2." or "3." (e.g. "3.1.13", "2.2.x").
+ *   - Frankendancer reports versions with a leading "0." — e.g. "0.820.30113". The first
+ *     segment is "0", the second is the Frankendancer release series (e.g. 820), the third
+ *     is the build number.
+ *   - Full Firedancer (pure, no Agave runtime) is rolling out and may use the same
+ *     "0.xxx.xxxxx" scheme; we treat any "0." prefix as a Firedancer variant.
+ *   - We also retain the legacy substring checks ("firedancer", "frankendancer", "fd\d")
+ *     in case older or dev builds emit them.
  */
 
 import { createSolanaRpc } from '@solana/kit';
@@ -41,6 +44,9 @@ import type { Address } from '@solana/kit';
 function isFiredancerVersion(version: string | null | undefined): boolean {
   if (version == null) return false;
   const v = version.toLowerCase();
+  // Primary signal: Frankendancer/Firedancer use 0.xxx.xxxxx (Agave uses 2.x/3.x).
+  if (/^0\.\d+\.\d+/.test(v)) return true;
+  // Legacy / dev-build labels.
   return (
     v.includes('firedancer') ||
     v.includes('frankendancer') ||
@@ -52,58 +58,28 @@ function isFiredancerVersion(version: string | null | undefined): boolean {
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(): Promise<void> {
-  const rpcUrl = process.argv[2] ?? 'https://api.mainnet-beta.solana.com';
-  console.log(`RPC: ${rpcUrl}`);
+interface ProbeResult {
+  label: string;
+  identity: string;
+  addr: string;
+  version: string | null;
+  ok: boolean;
+  reason?: string;
+  expectedPubkey?: string;
+  gotPubkey?: string;
+}
 
-  const rpc = createSolanaRpc(rpcUrl);
-
-  // 1. Fetch cluster nodes.
-  console.log('Fetching cluster nodes...');
-  const nodes = await rpc.getClusterNodes().send();
-  console.log(`Total nodes: ${nodes.length}`);
-
-  // 2. Filter to Firedancer/Frankendancer nodes with a tpuQuic address.
-  const candidates = nodes.filter(
-    (n) => isFiredancerVersion(n.version) && n.tpuQuic != null,
-  );
-
-  if (candidates.length === 0) {
-    // Show sample of versions to help tune heuristic.
-    const sample = nodes
-      .slice(0, 20)
-      .map((n) => n.version ?? '(null)')
-      .filter((v, i, a) => a.indexOf(v) === i)
-      .slice(0, 10);
-    console.log('No Firedancer/Frankendancer nodes found with tpuQuic.');
-    console.log('Sample versions (first 20 nodes):', sample);
-    console.log('Adjust isFiredancerVersion() heuristic if needed.');
-    process.exit(1);
-  }
-
-  console.log(`Found ${candidates.length} Firedancer candidate(s) with tpuQuic.`);
-
-  // 3. Pick the first candidate.
-  const target = candidates[0]!;
-  const identity = target.pubkey as Address;
-  const addr = target.tpuQuic!;
-
-  console.log(`\nTarget:`);
-  console.log(`  identity : ${identity}`);
-  console.log(`  tpuQuic  : ${addr}`);
-  console.log(`  version  : ${target.version ?? '(unknown)'}`);
-  console.log('');
-
-  // 4. Build ephemeral identity for the QUIC handshake.
-  const tpuIdentity = await buildIdentity(undefined); // ephemeral
-
-  // 5. Attempt QUIC handshake.
+async function probe(
+  label: string,
+  identity: Address,
+  addr: string,
+  version: string | null,
+): Promise<ProbeResult> {
+  const tpuIdentity = await buildIdentity(undefined);
   const events: string[] = [];
   const emit = (e: { type: string; [k: string]: unknown }): void => {
     events.push(JSON.stringify(e));
   };
-
-  console.log('Attempting QUIC handshake...');
   try {
     const conn = await openTpuQuicConn({
       identity,
@@ -112,26 +88,101 @@ async function main(): Promise<void> {
       tpuIdentity,
       emit,
     });
-
-    console.log('SUCCESS');
-    console.log(`  identity        : ${identity}`);
-    console.log(`  addr            : ${addr}`);
-    console.log(`  ALPN            : solana-tpu (accepted)`);
-    console.log(`  cert pubkey     : matched (pin verified)`);
-    console.log(`  conn.isOpen()   : ${conn.isOpen()}`);
-
-    await conn.destroy('smoke-test-done');
+    await conn.destroy('smoke-done');
+    return { label, identity: String(identity), addr, version, ok: true };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    console.log('FAILURE');
-    console.log(`  identity : ${identity}`);
-    console.log(`  addr     : ${addr}`);
-    console.log(`  reason   : ${reason}`);
-    if (events.length > 0) {
-      console.log('  events   :');
-      for (const ev of events) console.log(`    ${ev}`);
-    }
+    const pinEvent = events
+      .map((e) => JSON.parse(e))
+      .find((e) => e.type === 'cert-pin-mismatch');
+    return {
+      label,
+      identity: String(identity),
+      addr,
+      version,
+      ok: false,
+      reason,
+      ...(pinEvent && {
+        expectedPubkey: pinEvent.expected,
+        gotPubkey: pinEvent.got,
+      }),
+    };
+  }
+}
+
+async function main(): Promise<void> {
+  const rpcUrl = process.argv[2] ?? 'https://api.mainnet-beta.solana.com';
+  console.log(`RPC: ${rpcUrl}`);
+
+  const rpc = createSolanaRpc(rpcUrl);
+
+  console.log('Fetching cluster nodes...');
+  const nodes = await rpc.getClusterNodes().send();
+  console.log(`Total nodes: ${nodes.length}`);
+
+  const agaveNodes = nodes.filter(
+    (n) => n.tpuQuic != null && !isFiredancerVersion(n.version) && n.version != null,
+  );
+  const fdNodes = nodes.filter(
+    (n) => n.tpuQuic != null && isFiredancerVersion(n.version),
+  );
+
+  console.log(`Agave candidates      : ${agaveNodes.length}`);
+  console.log(`Firedancer candidates : ${fdNodes.length}`);
+
+  if (agaveNodes.length === 0 || fdNodes.length === 0) {
+    console.log('Insufficient candidates for comparative probe.');
     process.exit(1);
+  }
+
+  // Probe up to 3 of each to rule out per-node quirks.
+  const results: ProbeResult[] = [];
+  for (const n of agaveNodes.slice(0, 3)) {
+    const r = await probe('agave', n.pubkey as Address, n.tpuQuic!, n.version);
+    results.push(r);
+  }
+  for (const n of fdNodes.slice(0, 3)) {
+    const r = await probe('frankendancer', n.pubkey as Address, n.tpuQuic!, n.version);
+    results.push(r);
+  }
+
+  console.log('\n=== RESULTS ===');
+  for (const r of results) {
+    console.log(`\n[${r.label}] ${r.identity}  (${r.version})`);
+    console.log(`  addr : ${r.addr}`);
+    console.log(`  ok   : ${r.ok}`);
+    if (!r.ok) {
+      console.log(`  why  : ${r.reason}`);
+      if (r.expectedPubkey) {
+        console.log(`  expected SPKI pubkey : ${r.expectedPubkey}`);
+        console.log(`  got SPKI pubkey      : ${r.gotPubkey}`);
+      }
+    }
+  }
+
+  // Summary diagnosis
+  const agaveOk = results.filter((r) => r.label === 'agave' && r.ok).length;
+  const fdOk = results.filter((r) => r.label === 'frankendancer' && r.ok).length;
+  console.log('\n=== DIAGNOSIS ===');
+  console.log(`Agave pin success        : ${agaveOk}/3`);
+  console.log(`Frankendancer pin success: ${fdOk}/3`);
+  if (agaveOk === 0 && fdOk === 0) {
+    console.log(
+      'Neither Agave nor Frankendancer present a cert whose SPKI matches the gossip identity.',
+    );
+    console.log(
+      'Conclusion: server cert pubkey != validator identity on Solana TPU QUIC.',
+    );
+    console.log(
+      'Action: relax pinning to "present cert, accept all" (match prior v1 behavior) OR',
+    );
+    console.log(
+      'investigate whether Solana uses a different pinning scheme (e.g., per-connection cert).',
+    );
+  } else if (agaveOk > 0 && fdOk === 0) {
+    console.log('Agave pins correctly; Frankendancer uses a different scheme.');
+  } else if (agaveOk > 0 && fdOk > 0) {
+    console.log('Both accept our pin. The original failure may be a stale node.');
   }
 }
 
