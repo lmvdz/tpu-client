@@ -12,6 +12,7 @@ import * as x509 from '@peculiar/x509';
 import { getAddressEncoder } from '@solana/kit';
 import { QUICClient } from '@matrixai/quic';
 import { CryptoError } from '@matrixai/quic/native/types.js';
+import Logger, { LogLevel } from '@matrixai/logger';
 import type { Address } from '@solana/kit';
 import type { QUICClientCrypto } from '@matrixai/quic';
 import { parseHostPort } from './addr.js';
@@ -26,6 +27,12 @@ import type { TpuError } from './errors.js';
 
 const CONNECT_TIMEOUT_MS = 5_000;
 const WRITE_TIMEOUT_MS = 2_000;
+const DESTROY_TIMEOUT_MS = 2_000;
+
+// Silent logger passed to every QUICClient — @matrixai/quic defaults to INFO
+// which floods stdout with connection lifecycle messages. Library consumers
+// should observe via TpuEvent, not scraped stdout.
+const SILENT_LOGGER = new Logger('tpu-client', LogLevel.SILENT);
 
 // ---------------------------------------------------------------------------
 // Crypto provider — fills an ArrayBuffer in-place (ClientCryptoOps contract)
@@ -119,6 +126,7 @@ export async function openTpuQuicConn(args: OpenArgs): Promise<QuicConnection> {
       host,
       port,
       crypto: CLIENT_CRYPTO,
+      logger: SILENT_LOGGER,
       config: {
         // MANDATORY for Firedancer/Agave TPU — handshake fails without it.
         applicationProtos: ['solana-tpu'],
@@ -144,10 +152,14 @@ export async function openTpuQuicConn(args: OpenArgs): Promise<QuicConnection> {
       return !client.closed;
     },
     async destroy(_reason?: string): Promise<void> {
+      // @matrixai/quic destroy() can hang past its own internal close if a
+      // lingering stream or deferred send is still draining. Cap it at
+      // DESTROY_TIMEOUT_MS — after that the process-level socket cleanup will
+      // reclaim the fd; keeping callers waiting is worse.
       try {
-        await client.destroy({ force: true });
+        await withTimeout(DESTROY_TIMEOUT_MS, client.destroy({ force: true }));
       } catch {
-        // Suppress — already closed.
+        // Timeout or already-closed — either way, fire-and-forget.
       }
     },
     [INNER]: client,
