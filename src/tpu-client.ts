@@ -9,6 +9,7 @@ import { openTpuQuicConn, sendOnce, type PinMode } from './quic-sender.js';
 import { AtomicSnapshotRef, EMPTY_SNAPSHOT } from './route-snapshot.js';
 import { noopEmitter, type EventEmitter, type LeaderAttempt } from './events.js';
 import { TpuSendError } from './errors.js';
+import type { TpuLeaderError } from './errors.js';
 import type { TpuEvent } from './events.js';
 
 // ---------------------------------------------------------------------------
@@ -41,7 +42,7 @@ export interface TpuClient {
     tx: Uint8Array,
     opts?: { signal?: AbortSignal; fanoutSlots?: number },
   ): Promise<SendResult>;
-  close(): Promise<void>;
+  close(opts?: { timeoutMs?: number }): Promise<void>;
 }
 
 export interface SendResult {
@@ -55,6 +56,10 @@ export interface SendResult {
 
 const DEFAULT_FANOUT = 4;
 const DEFAULT_MAX_STREAMS = { staked: 128, unstaked: 8 };
+const DEFAULT_CLOSE_TIMEOUT_MS = 5_000;
+
+// Hoist decoder to module scope (RT3-S6)
+const base58Decoder = getBase58Decoder();
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -193,109 +198,131 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
       ready: readyDeferred,
 
       async sendRawTransaction(tx, sendOpts): Promise<SendResult> {
-        await readyDeferred; // belt-and-suspenders per DESIGN.md §Startup
         if (closing || signal.aborted) {
           throw new TpuSendError({ kind: 'aborted' });
         }
 
-        // S7: validate tx length before attempting send.
+        // RT3-S6: validate tx bytes before doing anything async.
         if (tx.length < 65) {
-          throw new TpuSendError({ kind: 'all-failed', attempts: 0 }, `tx too short: ${tx.length} bytes`);
+          throw new TpuSendError({ kind: 'invalid-tx', reason: `tx too short: ${tx.length} bytes` });
+        }
+        if ((tx[0] as number) >= 0x80) {
+          throw new TpuSendError({ kind: 'invalid-tx', reason: '>=128 signatures not supported' });
         }
 
-        const sig = computeSignature(tx);
-        const snap = snapshotRef.load();
-        const fanout = sendOpts?.fanoutSlots ?? opts.fanoutSlots ?? DEFAULT_FANOUT;
-        const leaders = snap.leaders.slice(0, fanout);
+        // RT2-C1: Register a sentinel promise IMMEDIATELY in inFlight so
+        // close() sees this send even before the first await completes.
+        let sentinelResolve!: (v: SendResult) => void;
+        let sentinelReject!: (e: unknown) => void;
+        const sentinelPromise = new Promise<SendResult>((res, rej) => {
+          sentinelResolve = res;
+          sentinelReject = rej;
+        });
+        inFlight.add(sentinelPromise);
 
-        if (leaders.length === 0) {
-          throw new TpuSendError({ kind: 'no-leaders' });
-        }
+        try {
+          await readyDeferred; // belt-and-suspenders per DESIGN.md §Startup
 
-        const sendSignal = sendOpts?.signal ?? signal;
-        const attempts: LeaderAttempt[] = [];
+          const sig = computeSignature(tx);
+          const snap = snapshotRef.load();
+          const fanout = sendOpts?.fanoutSlots ?? opts.fanoutSlots ?? DEFAULT_FANOUT;
+          const leaders = snap.leaders.slice(0, fanout);
 
-        // Fan-out: attempt all leaders in parallel.
-        const promises = leaders.map(async (leader): Promise<void> => {
-          if (leader.tpuQuicAddr === null) {
-            const attempt: LeaderAttempt = {
-              identity: leader.identity,
-              tpuQuicAddr: '',
-              ok: false,
-              error: { kind: 'no-tpu-addr', identity: leader.identity },
-            };
-            attempts.push(attempt);
-            return;
+          if (leaders.length === 0) {
+            throw new TpuSendError({ kind: 'no-leaders' });
           }
 
-          let entry;
-          try {
-            entry = await pool.acquire(leader.identity, leader.tpuQuicAddr);
-          } catch (err) {
-            const isQuarantinedErr = err instanceof Error && err.message === 'quarantined';
-            const attempt: LeaderAttempt = {
-              identity: leader.identity,
-              tpuQuicAddr: leader.tpuQuicAddr,
-              ok: false,
-              error: isQuarantinedErr
-                ? { kind: 'quarantined', identity: leader.identity }
-                : { kind: 'connect-timeout', identity: leader.identity },
-            };
-            attempts.push(attempt);
-            return;
-          }
+          const sendSignal = sendOpts?.signal ?? signal;
+          const attempts: LeaderAttempt[] = [];
 
-          try {
-            const result = await sendOnce(entry, tx, sendSignal);
-            if ('rttMs' in result) {
-              // Success path — rttMs present, no error field.
+          // Fan-out: attempt all leaders in parallel.
+          const promises = leaders.map(async (leader): Promise<void> => {
+            if (leader.tpuQuicAddr === null) {
               const attempt: LeaderAttempt = {
                 identity: leader.identity,
-                tpuQuicAddr: leader.tpuQuicAddr,
-                ok: true,
-                rttMs: result.rttMs,
+                tpuQuicAddr: '',
+                ok: false,
+                error: { kind: 'no-tpu-addr', identity: leader.identity },
               };
               attempts.push(attempt);
-            } else {
-              // Failure path — result is a TpuError; no rttMs field.
+              return;
+            }
+
+            let entry;
+            try {
+              entry = await pool.acquire(leader.identity, leader.tpuQuicAddr);
+            } catch (err) {
+              const isQuarantinedErr = err instanceof Error && err.message === 'quarantined';
               const attempt: LeaderAttempt = {
                 identity: leader.identity,
                 tpuQuicAddr: leader.tpuQuicAddr,
                 ok: false,
-                error: result,
+                error: isQuarantinedErr
+                  ? { kind: 'quarantined', identity: leader.identity }
+                  : { kind: 'connect-timeout', identity: leader.identity },
               };
               attempts.push(attempt);
+              return;
             }
-          } finally {
-            pool.release(entry);
+
+            try {
+              const result = await sendOnce(entry, tx, sendSignal);
+              if ('rttMs' in result) {
+                // Success path — rttMs present, no error field.
+                const attempt: LeaderAttempt = {
+                  identity: leader.identity,
+                  tpuQuicAddr: leader.tpuQuicAddr,
+                  ok: true,
+                  rttMs: result.rttMs,
+                };
+                attempts.push(attempt);
+              } else {
+                // Failure path — result is a TpuLeaderError; no rttMs field.
+                // sendOnce types its return as TpuError (broad); cast to the
+                // narrower TpuLeaderError — sendOnce only ever returns leader-level kinds.
+                const attempt: LeaderAttempt = {
+                  identity: leader.identity,
+                  tpuQuicAddr: leader.tpuQuicAddr,
+                  ok: false,
+                  error: result as TpuLeaderError,
+                };
+                attempts.push(attempt);
+              }
+            } finally {
+              pool.release(entry);
+            }
+          });
+
+          await Promise.all(promises);
+
+          emit({ type: 'send', signature: sig, attempts });
+
+          if (!attempts.some((a) => a.ok)) {
+            throw new TpuSendError(
+              { kind: 'all-failed', attempts: attempts.length },
+              `all ${attempts.length} leader attempt(s) failed`,
+            );
           }
-        });
 
-        const batchPromise = Promise.all(promises);
-        inFlight.add(batchPromise);
-        try {
-          await batchPromise;
+          const result: SendResult = { signature: sig, attempts };
+          sentinelResolve(result);
+          return result;
+        } catch (err) {
+          sentinelReject(err);
+          throw err;
         } finally {
-          inFlight.delete(batchPromise);
+          inFlight.delete(sentinelPromise);
         }
-
-        emit({ type: 'send', signature: sig, attempts });
-
-        if (!attempts.some((a) => a.ok)) {
-          throw new TpuSendError(
-            { kind: 'all-failed', attempts: attempts.length },
-            `all ${attempts.length} leader attempt(s) failed`,
-          );
-        }
-
-        return { signature: sig, attempts };
       },
 
-      async close(): Promise<void> {
+      async close(closeOpts?: { timeoutMs?: number }): Promise<void> {
         if (closing) return;
         closing = true;
-        // Drain all in-flight sends before aborting the signal.
-        await Promise.allSettled([...inFlight]);
+        // RT4-S4: race drain against a configurable timeout (default 5 s).
+        const timeoutMs = closeOpts?.timeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
+        const drainPromise = Promise.allSettled([...inFlight]);
+        const timeoutPromise = new Promise<void>((resolve) => setTimeout(resolve, timeoutMs));
+        await Promise.race([drainPromise, timeoutPromise]);
         abortAll();
         await dispose();
       },
@@ -332,13 +359,9 @@ async function waitForSnapshot(ref: AtomicSnapshotRef, signal: AbortSignal): Pro
  * Solana wire format: [compact-u16 numSigs] [64-byte sigs...] [message]
  * For any realistic transaction (numSigs < 128) the compact-u16 encodes
  * as a single byte, so the first signature lives at bytes [1..65].
- *
- * Limitation: transactions with >= 128 signatures use a 2-byte compact-u16
- * prefix; this code will silently read the wrong bytes in that (essentially
- * impossible in practice) case.
  */
 function computeSignature(tx: Uint8Array): Signature {
   const sigBytes = tx.subarray(1, 65);
-  // getBase58Decoder().decode() returns a base58 string; brand-cast to Signature.
-  return getBase58Decoder().decode(sigBytes) as unknown as Signature;
+  // base58Decoder is hoisted to module scope (RT3-S6).
+  return base58Decoder.decode(sigBytes) as unknown as Signature;
 }

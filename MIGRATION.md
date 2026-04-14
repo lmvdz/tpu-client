@@ -38,6 +38,9 @@ import { readFileSync } from 'node:fs';
 import {
   createSolanaRpc,
   createSolanaRpcSubscriptions,
+  generateKeyPairSigner,
+  address,
+  lamports,
   createTransactionMessage,
   pipe,
   setTransactionMessageFeePayerSigner,
@@ -46,6 +49,7 @@ import {
   signTransactionMessageWithSigners,
   getBase64EncodedWireTransaction,
 } from '@solana/kit';
+import { getTransferSolInstruction } from '@solana-program/system';
 import {
   createTpuClient,
   sendAndConfirmTpuTransactionFactory,
@@ -66,13 +70,22 @@ const identity = await ed25519KeyPairFromSolanaSecret(secret);
 const tpu = await createTpuClient({ rpc, rpcSubscriptions, identity });
 
 // Build + sign your transaction with @solana/kit.
+const payer = await generateKeyPairSigner();
+const recipient = address('11111111111111111111111111111111'); // replace with real address
 const { value: blockhash } = await rpc.getLatestBlockhash().send();
+
+const transferIx = getTransferSolInstruction({
+  source: payer,
+  destination: recipient,
+  amount: lamports(1_000_000n), // 0.001 SOL
+});
+
 const signedTx = await signTransactionMessageWithSigners(
   pipe(
     createTransactionMessage({ version: 0 }),
-    (m) => setTransactionMessageFeePayerSigner(signerFromKit, m),
+    (m) => setTransactionMessageFeePayerSigner(payer, m),
     (m) => setTransactionMessageLifetimeUsingBlockhash(blockhash, m),
-    (m) => appendTransactionMessageInstruction(yourInstruction, m),
+    (m) => appendTransactionMessageInstruction(transferIx, m),
   ),
 );
 

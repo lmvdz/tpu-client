@@ -52,12 +52,15 @@ npm install @solana/tpu-client @solana/kit @matrixai/quic @peculiar/x509
 
 ## Quickstart
 
+This example transfers 0.001 SOL from a generated payer to a recipient using the `@solana-program/system` package.
+
 ```ts
 import { readFileSync } from 'node:fs';
 import {
   createSolanaRpc,
   createSolanaRpcSubscriptions,
   generateKeyPairSigner,
+  address,
   lamports,
   createTransactionMessage,
   pipe,
@@ -67,6 +70,7 @@ import {
   signTransactionMessageWithSigners,
   getBase64EncodedWireTransaction,
 } from '@solana/kit';
+import { getTransferSolInstruction } from '@solana-program/system';
 import {
   createTpuClient,
   sendAndConfirmTpuTransactionFactory,
@@ -88,28 +92,34 @@ const rpcSubscriptions = createSolanaRpcSubscriptions(
 // 3. Create the TPU client. Resolves when leader schedule is primed.
 const tpu = await createTpuClient({ rpc, rpcSubscriptions, identity });
 
-// 4. Build and sign your transaction with @solana/kit.
+// 4. Build and sign a SOL transfer with @solana/kit + @solana-program/system.
 const payer = await generateKeyPairSigner();
+const recipient = address('11111111111111111111111111111111'); // replace with real address
 const { value: blockhash } = await rpc.getLatestBlockhash().send();
+
+const transferIx = getTransferSolInstruction({
+  source: payer,
+  destination: recipient,
+  amount: lamports(1_000_000n), // 0.001 SOL
+});
 
 const signedTx = await signTransactionMessageWithSigners(
   pipe(
     createTransactionMessage({ version: 0 }),
     (m) => setTransactionMessageFeePayerSigner(payer, m),
     (m) => setTransactionMessageLifetimeUsingBlockhash(blockhash, m),
-    // ... appendTransactionMessageInstruction(yourInstruction, m),
+    (m) => appendTransactionMessageInstruction(transferIx, m),
   ),
 );
-const txBytes = Buffer.from(
-  getBase64EncodedWireTransaction(signedTx),
-  'base64',
+const txBytes = new Uint8Array(
+  Buffer.from(getBase64EncodedWireTransaction(signedTx), 'base64'),
 );
 
 // 5. Send and confirm.
 const confirm = sendAndConfirmTpuTransactionFactory({ tpu, rpc, rpcSubscriptions });
 const ac = new AbortController();
 
-const result = await confirm(new Uint8Array(txBytes), {
+const result = await confirm(txBytes, {
   commitment: 'confirmed',
   abortSignal: ac.signal,
   lastValidBlockHeight: blockhash.lastValidBlockHeight,
@@ -199,8 +209,10 @@ const tpu = await createTpuClient({
 | `conn-close` | `identity`, `reason?` | QUIC connection closed |
 | `conn-evict` | `identity`, `reason` | Connection evicted from pool (idle / non-upcoming / LRU cap) |
 | `cert-pin-mismatch` | `identity`, `expected`, `got` | Server cert SPKI did not match gossip identity. In default `'observe'` mode this is informational only; in `'strict'` mode the leader is rejected and quarantined until the next cluster-refresh |
-| `send` | `signature`, `attempts` | Fires once per `sendRawTransaction` with full attempt detail |
+| `send` | `signature`, `attempts` | Fires once per `sendRawTransaction` with full attempt detail. `LeaderAttempt.ok: true` means the QUIC stream write completed successfully — this is **not** confirmation that the leader accepted or will include the transaction. Use `sendAndConfirmTpuTransactionFactory` for landing confirmation. |
 | `error` | `error: TpuError` | Non-fatal error during background refresh |
+
+**SemVer policy:** Adding a new `TpuEvent` variant is a **MINOR** version bump. If you use an exhaustive `switch` over `e.type`, include a `default:` branch so your code remains forward-compatible.
 
 ---
 
@@ -208,7 +220,7 @@ const tpu = await createTpuClient({
 
 ### Alpenglow (SIMD-0326)
 
-Alpenglow is a proposed consensus replacement that changes how votes propagate internally but leaves the **TPU ingress path unchanged** — transactions are still forwarded to leaders over QUIC at the same TPU port. This library will continue to work through and after Alpenglow activation without changes. See the SIMD: https://github.com/solana-foundation/solana-improvement-documents/pull/228
+Alpenglow SIMD-0326, as specified, does not change TPU ingress — transactions continue to be forwarded to leaders over QUIC at the same TPU port. This client will be re-tested at activation. See the SIMD: https://github.com/solana-foundation/solana-improvement-documents/pull/228
 
 ### Firedancer / Frankendancer
 
@@ -217,7 +229,7 @@ Firedancer is Jump Trading's independent validator client. It requires:
 - ALPN set to `solana-tpu` — handled automatically.
 - A valid Ed25519 TLS certificate in the `ClientHello` — generated from your `identity` keypair.
 
-Frankendancer (Firedancer networking + Agave consensus) has been handling roughly 20% of leader slots on mainnet. This library is tested against both — `npm run smoke:firedancer` performs a live comparative probe. See: https://docs.firedancer.io
+Frankendancer (Firedancer networking + Agave consensus) has been handling roughly 20% of leader slots on mainnet. Tested against Agave (solana-test-validator for integration, mainnet nodes via the smoke script) and Frankendancer (mainnet smoke script). The nightly CI smoke probe re-verifies. See: https://docs.firedancer.io
 
 ### Server cert pinning: `pinMode`
 
@@ -266,12 +278,44 @@ All exports from the `@solana/tpu-client` package:
 | `TpuConfirmOptions` | `interface` | Per-call options: `commitment`, `abortSignal`, `lastValidBlockHeight` |
 | `TpuConfirmResult` | `interface` | `SendResult & { commitment }` |
 | `TpuEvent` | `type` | Discriminated union of all observable events |
-| `TpuError` | `type` | Discriminated union of all error kinds |
-| `LeaderAttempt` | `interface` | Per-leader send result: `identity`, `tpuQuicAddr`, `ok`, `error?`, `rttMs?` |
+| `TpuError` | `type` | Backward-compat union of `TpuLeaderError \| TpuSendFailure \| {kind:'slot-subscription'}` |
+| `TpuLeaderError` | `type` | Per-leader attempt error variants (connect-timeout, write-timeout, etc.) |
+| `TpuSendFailure` | `type` | Top-level send failure variants (aborted, no-leaders, all-failed, invalid-tx) |
+| `LeaderAttempt` | `type` | Discriminated union on `ok`: `{ok:true; rttMs}` or `{ok:false; error: TpuLeaderError}`. `ok:true` means QUIC stream write completed — not landing confirmation. |
 | `LeaderInfo` | `interface` | `{ identity: Address; tpuQuicAddr: string \| null; stake?: bigint }` |
 | `LeaderDiscoveryProvider` | `interface` | Pluggable leader discovery interface |
 | `TpuIdentity` | `interface` | `{ keyPair, certDer, pubkeyRaw, ephemeral }` |
 | `EventEmitter` | `type` | `(e: TpuEvent) => void` |
+| `evaluatePinDecision` | `function` | Pure unit-testable cert-pin decision logic; useful for testing custom transport wrappers |
+
+---
+
+## Running the integration test
+
+**Prerequisites:**
+
+- `solana-test-validator` on your `PATH` (install via Solana CLI: https://docs.solana.com/cli/install-solana-cli-tools)
+- Node.js >= 22.11
+
+**Steps:**
+
+```bash
+# Start a local test validator in the background (takes ~5 s to prime).
+solana-test-validator &
+
+# Run the integration suite (targets localhost:8899 by default).
+npm run test:integration
+```
+
+Set `TPU_RPC_URL` and `TPU_WS_URL` to point at a different cluster:
+
+```bash
+TPU_RPC_URL=https://api.devnet.solana.com \
+TPU_WS_URL=wss://api.devnet.solana.com \
+npm run test:integration
+```
+
+**Expected runtime:** ~30–60 s against a local validator; up to 3 min against devnet depending on congestion.
 
 ---
 

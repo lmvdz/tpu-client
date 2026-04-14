@@ -71,6 +71,8 @@ export class QuicPool {
   }
 
   async acquire(identity: Address, addr: string): Promise<PoolEntry> {
+    // RT2-M4: prevent opening a fresh conn into a dying pool.
+    if (this.#opts.signal.aborted) throw new Error('aborted');
     if (this.#opts.isQuarantined?.(identity)) {
       throw new Error('quarantined');
     }
@@ -148,6 +150,8 @@ export class QuicPool {
   }
 
   async #drainAndClose(entry: PoolEntry, reason: string): Promise<void> {
+    // RT2-S3: idempotent — evictor snapshot and closeAll can race; second caller is a no-op.
+    if (entry.state !== 'open') return;
     entry.state = 'draining';
     this.#entries.delete(entry.identity); // prevent new acquires from finding it
     this.#opts.emit({ type: 'conn-evict', identity: entry.identity, reason });
@@ -167,12 +171,14 @@ export class QuicPool {
 /** Minimal async semaphore; tryAcquire returns false immediately if saturated. */
 export class AsyncSemaphore {
   #available: number;
-  constructor(initial: number) { this.#available = initial; }
+  readonly #initial: number;
+  constructor(initial: number) { this.#initial = initial; this.#available = initial; }
   tryAcquire(): boolean {
     if (this.#available <= 0) return false;
     this.#available--;
     return true;
   }
-  release(): void { this.#available++; }
+  // RT2-S1: cap at initial to prevent count growing past max on double-release.
+  release(): void { if (this.#available < this.#initial) this.#available++; }
   get available(): number { return this.#available; }
 }
