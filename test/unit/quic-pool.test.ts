@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { QuicPool, AsyncSemaphore } from '../../src/quic-pool.js';
 import type { QuicConnection } from '../../src/quic-pool.js';
 import type { TpuEvent } from '../../src/events.js';
