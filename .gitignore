@@ -1,3 +1,6 @@
 .env
 node_modules
 lib
+*.tsbuildinfo
+coverage
+.vitest
