@@ -35,28 +35,31 @@ export async function createSlotTracker(opts: SlotTrackerOptions): Promise<SlotT
 
   const { promise: readyPromise, resolve: resolveReady } = createOnceResolver();
 
-  // Main WS subscription.
-  const notifications = await rpcSubscriptions
-    .slotNotifications()
-    .subscribe({ abortSignal: signal });
-
-  // Drive notification loop in background (fire-and-forget; signal governs teardown).
+  // Drive notification loop in background with resubscribe on error (RT2-C3).
+  // The initial subscribe() call is inside the loop so the tracker is returned
+  // before subscription succeeds — readyResolvers pattern handles this.
   void (async () => {
-    try {
-      for await (const n of notifications) {
-        // Slot, parent, root are already bigint (Slot = bigint in @solana/rpc-types).
-        const slot = n.slot;
-        const parent = n.parent;
-        const skipped = Number(slot - parent - 1n);
-        recordSample(slot);
-        lastSlotMs = Date.now();
-        currentEstimate = slot;
-        emit({ type: 'slot', slot, parent, skipped: Math.max(0, skipped) });
-        if (sampleCount >= MIN_SAMPLES) resolveReady();
-      }
-    } catch (err) {
-      if (!signal.aborted) {
+    while (!signal.aborted) {
+      try {
+        const notifications = await rpcSubscriptions
+          .slotNotifications()
+          .subscribe({ abortSignal: signal });
+        for await (const n of notifications) {
+          // Slot, parent, root are already bigint (Slot = bigint in @solana/rpc-types).
+          const slot = n.slot;
+          const parent = n.parent;
+          const skipped = Number(slot - parent - 1n);
+          recordSample(slot);
+          lastSlotMs = Date.now();
+          currentEstimate = slot;
+          emit({ type: 'slot', slot, parent, skipped: Math.max(0, skipped) });
+          if (sampleCount >= MIN_SAMPLES) resolveReady();
+        }
+      } catch (err) {
+        if (signal.aborted) return;
         emit({ type: 'error', error: { kind: 'slot-subscription', cause: String(err) } });
+        // Backoff before resubscribe — don't hot-loop a busted endpoint.
+        await new Promise<void>((r) => setTimeout(r, 2_000));
       }
     }
   })();
@@ -71,7 +74,10 @@ export async function createSlotTracker(opts: SlotTrackerOptions): Promise<SlotT
       try {
         const slot = await rpc.getSlot({ commitment: 'processed' }).send({ abortSignal: signal });
         currentEstimate = slot;
-        if (lastSlotMs === 0) resolveReady(); // cold-start fallback
+        const isColdStart = lastSlotMs === 0;
+        // RT2-C3: update lastSlotMs so isFresh() returns true after successful poll.
+        lastSlotMs = Date.now();
+        if (isColdStart) resolveReady(); // cold-start fallback
       } catch {
         // keep stale estimate; next tick will retry
       }

@@ -1,13 +1,9 @@
 import type { Address, Signature } from '@solana/kit';
-import type { TpuError } from './errors.js';
+import type { TpuError, TpuLeaderError } from './errors.js';
 
-export interface LeaderAttempt {
-  identity: Address;
-  tpuQuicAddr: string;
-  ok: boolean;
-  error?: TpuError;
-  rttMs?: number;
-}
+export type LeaderAttempt =
+  | { identity: Address; tpuQuicAddr: string; ok: true; rttMs: number }
+  | { identity: Address; tpuQuicAddr: string; ok: false; error: TpuLeaderError };
 
 export type TpuEvent =
   | { type: 'ready' }

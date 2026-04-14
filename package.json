@@ -1,6 +1,6 @@
 {
   "name": "tpu-client",
-  "version": "2.0.0-alpha.1",
+  "version": "2.0.0-alpha.2",
   "type": "module",
   "description": "",
   "main": "./lib/index.js",
@@ -30,12 +30,15 @@
     "url": "https://github.com/lmvdz/tpu-client/issues"
   },
   "homepage": "https://github.com/lmvdz/tpu-client#readme",
-  "dependencies": {
+  "peerDependencies": {
     "@matrixai/quic": "^2.0.9",
     "@peculiar/x509": "^1.12.0",
     "@solana/kit": "^6.8.0"
   },
   "devDependencies": {
+    "@matrixai/quic": "^2.0.9",
+    "@peculiar/x509": "^1.12.0",
+    "@solana/kit": "^6.8.0",
     "@solana-program/system": "^0.6.0",
     "@types/node": "^22",
     "@typescript-eslint/eslint-plugin": "^7.11.0",

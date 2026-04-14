@@ -2,13 +2,23 @@ import * as x509 from '@peculiar/x509';
 import { webcrypto } from 'node:crypto';
 
 // Register @peculiar/x509's crypto provider once at module load.
-x509.cryptoProvider.set(webcrypto as unknown as Crypto);
+// Guard: if a host app already set a provider, don't stomp it.
+try {
+  x509.cryptoProvider.get();
+  // Already set by host — leave it in place.
+} catch {
+  x509.cryptoProvider.set(webcrypto as unknown as Crypto);
+}
 
 export interface TpuIdentity {
   /** Ed25519 keypair used as QoS identity. */
   readonly keyPair: CryptoKeyPair;
   /** Self-signed DER-encoded X.509 cert for TLS ClientHello. */
   readonly certDer: Uint8Array;
+  /** Self-signed cert as PEM string (cached at build time, avoid re-encoding per call). */
+  readonly certPem: string;
+  /** PKCS#8 private key as PEM string (cached at build time, avoid re-encoding per call). */
+  readonly privateKeyPem: string;
   /** Identity pubkey in raw 32 bytes (for logging and diagnostics). */
   readonly pubkeyRaw: Uint8Array;
   /** True if this was generated ephemerally (no user-supplied key). */
@@ -44,7 +54,9 @@ export async function buildIdentity(supplied?: CryptoKeyPair): Promise<TpuIdenti
 
   const certDer = new Uint8Array(cert.rawData);
   const pubkeyRaw = await exportRawEd25519Pubkey(keyPair.publicKey);
-  return { keyPair, certDer, pubkeyRaw, ephemeral };
+  const certPem = derToPemCert(certDer);
+  const privateKeyPem = await privateKeyToPem(keyPair.privateKey);
+  return { keyPair, certDer, certPem, privateKeyPem, pubkeyRaw, ephemeral };
 }
 
 /**
@@ -102,6 +114,21 @@ export async function ed25519KeyPairFromSolanaSecret(secret64: Uint8Array): Prom
     true,
     ['sign'],
   );
+
+  // Derive the TRUE public key from the private key via JWK export, then
+  // constant-time compare against the supplied pubBytes to detect corrupted
+  // or forged keystores before they produce a silent identity split.
+  const jwk = await webcrypto.subtle.exportKey('jwk', privateKey);
+  if (!jwk.x) throw new Error('JWK export did not include public key component (x)');
+  const derivedPubBytes = Buffer.from(jwk.x, 'base64url');
+  if (derivedPubBytes.length !== 32) throw new Error('derived public key is not 32 bytes');
+  let diff = 0;
+  for (let i = 0; i < 32; i++) diff |= (derivedPubBytes[i] ?? 0) ^ (pubBytes[i] ?? 0);
+  if (diff !== 0) {
+    throw new Error(
+      'ed25519: seed/pubkey mismatch in secret64 — corrupted keystore?',
+    );
+  }
 
   // Import public key directly from the known bytes via SPKI wrapper.
   const spki = buildEd25519Spki(pubBytes);
@@ -192,4 +219,15 @@ function randomSerial(): string {
   return Array.from(bytes)
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
+}
+
+function derToPemCert(der: Uint8Array): string {
+  const b64 = Buffer.from(der).toString('base64').replace(/(.{64})/g, '$1\n').trimEnd();
+  return `-----BEGIN CERTIFICATE-----\n${b64}\n-----END CERTIFICATE-----\n`;
+}
+
+async function privateKeyToPem(key: CryptoKey): Promise<string> {
+  const der = await webcrypto.subtle.exportKey('pkcs8', key);
+  const b64 = Buffer.from(der).toString('base64').replace(/(.{64})/g, '$1\n').trimEnd();
+  return `-----BEGIN PRIVATE KEY-----\n${b64}\n-----END PRIVATE KEY-----\n`;
 }

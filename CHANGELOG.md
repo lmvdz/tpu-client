@@ -7,6 +7,29 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## 2.0.0-alpha.2
+
+### Breaking (within alpha)
+- Split `TpuError` into `TpuLeaderError` + `TpuSendFailure` for better type narrowing. `TpuError` is kept as the backward-compat union.
+- `LeaderAttempt` is now a discriminated union on `ok`: `{ok:true; rttMs}` | `{ok:false; error: TpuLeaderError}`.
+
+### Fixed
+- `close()` drain race where sends started after `closing=true` were lost (RT2-C1).
+- `close()` hang when a send is stuck on QUIC backpressure — now accepts `timeoutMs` option (default 5 s).
+- `TpuConfirmOptions.abortSignal` is now optional; defaults to a no-op signal when absent.
+- Short tx bytes now throw `{kind:'invalid-tx', reason:'tx too short'}` instead of wrongly labeled `'all-failed'`.
+- Transactions with >=128 signatures are now rejected explicitly with `{kind:'invalid-tx'}`.
+
+### Added
+- `invalid-tx` `TpuSendFailure` variant.
+- `TpuLeaderError` and `TpuSendFailure` re-exported from the barrel for granular type narrowing.
+- `evaluatePinDecision` re-exported from the barrel (useful for testing custom transport wrappers).
+- `peerDependencies` for `@solana/kit`, `@matrixai/quic`, `@peculiar/x509` (was `dependencies`).
+- CI Node 23 matrix entry + `npm pack --dry-run` verification step.
+- Nightly CI job (`smoke-firedancer`) probing mainnet-beta to catch cert/ALPN changes.
+
+---
+
 ## 2.0.0-alpha.1 (unreleased)
 
 ### Changed

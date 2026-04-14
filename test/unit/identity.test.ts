@@ -14,6 +14,8 @@ describe('buildIdentity', () => {
     expect(id.pubkeyRaw.length).toBe(32);
     expect(id.certDer).toBeInstanceOf(Uint8Array);
     expect(id.certDer.length).toBeGreaterThan(0);
+    expect(id.certPem.startsWith('-----BEGIN CERTIFICATE-----')).toBe(true);
+    expect(id.privateKeyPem.startsWith('-----BEGIN PRIVATE KEY-----')).toBe(true);
   });
 
   it('with keypair → ephemeral=false, pubkeyRaw matches exported SPKI[12:]', async () => {
@@ -100,5 +102,31 @@ describe('ed25519KeyPairFromSolanaSecret', () => {
 
   it('throws on wrong length', async () => {
     await expect(ed25519KeyPairFromSolanaSecret(new Uint8Array(32))).rejects.toThrow('64 bytes');
+  });
+
+  it('throws with "mismatch" when pubkey half is forged (does not match seed)', async () => {
+    // Build a valid secret64 first
+    const original = (await webcrypto.subtle.generateKey(
+      { name: 'Ed25519' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const pkcs8 = new Uint8Array(await webcrypto.subtle.exportKey('pkcs8', original.privateKey));
+    const seed = pkcs8.slice(pkcs8.length - 32);
+
+    // Use a different keypair's pubkey as the forged bytes
+    const other = (await webcrypto.subtle.generateKey(
+      { name: 'Ed25519' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    const otherSpki = new Uint8Array(await webcrypto.subtle.exportKey('spki', other.publicKey));
+    const forgedPub = otherSpki.slice(12); // real but wrong pubkey
+
+    const forgedSecret = new Uint8Array(64);
+    forgedSecret.set(seed, 0);
+    forgedSecret.set(forgedPub, 32);
+
+    await expect(ed25519KeyPairFromSolanaSecret(forgedSecret)).rejects.toThrow(/mismatch/);
   });
 });

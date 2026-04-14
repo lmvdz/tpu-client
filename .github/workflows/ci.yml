@@ -3,6 +3,8 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    - cron: '0 6 * * *'
 
 jobs:
   test:
@@ -10,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node: [22, 24]
+        node: [22, 23, 24]
 
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +41,29 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify publishable shape
+        run: npm pack --dry-run
+
       # NOTE: Integration tests (test:integration) are intentionally excluded from CI.
       # They require a live solana-test-validator and a real QUIC-capable network path.
       # Run them locally with: npm run test:integration
+
+  smoke-firedancer:
+    name: Nightly Firedancer smoke (mainnet-beta)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Firedancer smoke probe
+        run: npm run smoke:firedancer

@@ -23,7 +23,7 @@ export interface TpuConfirmFactoryCfg {
 
 export interface TpuConfirmOptions {
   commitment: Commitment;
-  abortSignal: AbortSignal;
+  abortSignal?: AbortSignal;
   lastValidBlockHeight: bigint;
 }
 
@@ -84,9 +84,11 @@ export function sendAndConfirmTpuTransactionFactory(
     tx: Uint8Array,
     opts: TpuConfirmOptions,
   ): Promise<TpuConfirmResult> {
+    const abortSignal = opts.abortSignal ?? new AbortController().signal;
+
     // 1. Send via TPU (parallel fan-out to upcoming leaders).
     const sendResult = await cfg.tpu.sendRawTransaction(tx, {
-      signal: opts.abortSignal,
+      signal: abortSignal,
     });
 
     // 2. Race block-height exceedence vs. signature confirmation.
@@ -95,12 +97,12 @@ export function sendAndConfirmTpuTransactionFactory(
     //    waitForRecentTransactionConfirmation does the same internally.
     await Promise.race([
       getRecentSignatureConfirmationPromise({
-        abortSignal: opts.abortSignal,
+        abortSignal,
         commitment: opts.commitment,
         signature: sendResult.signature,
       }),
       getBlockHeightExceedencePromise({
-        abortSignal: opts.abortSignal,
+        abortSignal,
         commitment: opts.commitment,
         lastValidBlockHeight: opts.lastValidBlockHeight,
       }),

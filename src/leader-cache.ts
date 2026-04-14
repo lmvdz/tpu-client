@@ -121,8 +121,13 @@ function leadersFromSchedule(
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    const id = setTimeout(resolve, ms);
-    signal.addEventListener('abort', () => { clearTimeout(id); resolve(); }, { once: true });
+    // RT2-M1: remove abort listener when timeout fires naturally to avoid accumulation.
+    const onAbort = () => { clearTimeout(id); resolve(); };
+    const id = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -285,8 +290,12 @@ export async function startLeaderCache(opts: LeaderCacheOptions): Promise<void> 
           count: result.leaders.length,
           source: result.source,
         });
-      } catch {
-        // Loop survives transient per-tick failures; previous snapshot retained.
+      } catch (err) {
+        // RT2-C2/RT4-C1: emit background RPC errors so ops can detect stale snapshots.
+        // TODO: replace with a dedicated { kind: 'rpc-error' } variant once errors.ts is updated.
+        // Note: absence of 'leaders-refresh' or 'cluster-refresh' events for > 2*TICK_MS
+        // indicates the loop is dead or continuously erroring.
+        opts.emit({ type: 'error', error: { kind: 'slot-subscription', cause: `leader-cache: ${String(err)}` } });
       }
 
       await sleep(TICK_MS, opts.signal);

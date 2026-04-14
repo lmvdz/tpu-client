@@ -5,6 +5,7 @@ export type {
   SendResult,
 } from './tpu-client.js';
 export type { PinMode } from './quic-sender.js';
+export { evaluatePinDecision } from './quic-sender.js';
 
 export { sendAndConfirmTpuTransactionFactory } from './confirm.js';
 export type {
@@ -15,7 +16,7 @@ export type {
 
 export type { TpuEvent, LeaderAttempt, EventEmitter } from './events.js';
 export { TpuSendError } from './errors.js';
-export type { TpuError } from './errors.js';
+export type { TpuError, TpuLeaderError, TpuSendFailure } from './errors.js';
 
 export type { LeaderDiscoveryProvider } from './leader-cache.js';
 export type { LeaderInfo } from './route-snapshot.js';

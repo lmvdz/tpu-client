@@ -176,6 +176,70 @@ describe('slot-tracker', () => {
     expect(slotEvents[0].skipped).toBe(2);
   });
 
+  it('RT2-C3: resubscribes after notification iterator rejection', async () => {
+    vi.useFakeTimers();
+
+    let subscribeCount = 0;
+
+    // First subscription: immediately throws on first next() call.
+    function makeRejectingIterable() {
+      return {
+        [Symbol.asyncIterator]() {
+          return {
+            next(): Promise<IteratorResult<any>> {
+              return Promise.reject(new Error('ws disconnected'));
+            },
+            return(): Promise<IteratorResult<any>> {
+              return Promise.resolve({ value: undefined, done: true as const });
+            },
+          };
+        },
+      };
+    }
+
+    const { iterable: goodIterable } = createControlledNotifications();
+
+    const fakeRpc = {
+      getSlot: () => ({ send: async () => 999n }),
+    };
+    const fakeSubs = {
+      slotNotifications: () => ({
+        subscribe: async () => {
+          subscribeCount++;
+          if (subscribeCount === 1) return makeRejectingIterable();
+          return goodIterable;
+        },
+      }),
+    };
+
+    await createSlotTracker({
+      rpc: fakeRpc as any,
+      rpcSubscriptions: fakeSubs as any,
+      emit,
+      signal: abortController.signal,
+    });
+
+    // Flush microtasks so first subscription attempt runs and fails.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // First subscription should have errored and emitted a slot-subscription error.
+    const errEvents = events.filter((e) => e.type === 'error');
+    expect(errEvents.length).toBeGreaterThan(0);
+    expect(subscribeCount).toBe(1);
+
+    // Advance 2s backoff so resubscribe fires.
+    await vi.advanceTimersByTimeAsync(2_000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(subscribeCount).toBe(2);
+
+    // estimate should reflect the good subscription slots
+    // (Note: tracker.ready may already be resolved via fallback poll; just confirm subscribeCount)
+    expect(subscribeCount).toBe(2);
+  });
+
   it('abort signal closes subscription loop', async () => {
     const { iterable, push } = createControlledNotifications();
 

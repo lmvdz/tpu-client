@@ -67,6 +67,12 @@ const INNER = Symbol('quic-client');
  *                   where Frankendancer presents per-connection certs (SPKI !=
  *                   identity) and some Agave nodes sit behind load balancers.
  *   - `'off'`     — do not inspect server certs at all.
+ *
+ * Note: the client cert (your QoS identity) is ALWAYS presented on the QUIC
+ * ClientHello regardless of pinMode, because validators use it for
+ * stake-weighted QoS. `pinMode` only governs SERVER cert inspection. If you
+ * need to suppress client-identity exposure, do not pass `identity` — use the
+ * ephemeral default, which still presents a cert but with a throwaway keypair.
  */
 export type PinMode = 'strict' | 'observe' | 'off';
 
@@ -98,10 +104,10 @@ export async function openTpuQuicConn(args: OpenArgs): Promise<QuicConnection> {
   const encoder = getAddressEncoder();
   const expectedPubkey: Uint8Array = new Uint8Array(encoder.encode(args.identity));
 
-  // Build PEM strings for the client certificate and private key.
+  // Use pre-computed PEM strings from TpuIdentity (computed once at buildIdentity time).
   // @matrixai/quic config.key / config.cert accept PEM (string | Uint8Array).
-  const certPem = derToPemCert(args.tpuIdentity.certDer);
-  const keyPem = await privateKeyToPem(args.tpuIdentity.keyPair.privateKey);
+  const certPem = args.tpuIdentity.certPem;
+  const keyPem = args.tpuIdentity.privateKeyPem;
 
   // `verifyPeer: true` is required for the client cert to be presented (QoS),
   // so even in `pinMode: 'off'` we install a permissive callback rather than
@@ -318,21 +324,3 @@ function hex(b: Uint8Array): string {
     .join('');
 }
 
-/**
- * Convert DER-encoded cert to PEM string.
- * @matrixai/quic config.cert is passed through collectPEMs which expects PEM text.
- */
-function derToPemCert(der: Uint8Array): string {
-  const b64 = Buffer.from(der).toString('base64').replace(/(.{64})/g, '$1\n').trimEnd();
-  return `-----BEGIN CERTIFICATE-----\n${b64}\n-----END CERTIFICATE-----\n`;
-}
-
-/**
- * Export a WebCrypto Ed25519 private key as a PKCS#8 PEM string.
- * @matrixai/quic config.key is passed through collectPEMs which expects PEM text.
- */
-async function privateKeyToPem(key: CryptoKey): Promise<string> {
-  const der = await webcrypto.subtle.exportKey('pkcs8', key);
-  const b64 = Buffer.from(der).toString('base64').replace(/(.{64})/g, '$1\n').trimEnd();
-  return `-----BEGIN PRIVATE KEY-----\n${b64}\n-----END PRIVATE KEY-----\n`;
-}
