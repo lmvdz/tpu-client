@@ -137,12 +137,19 @@ async function main(): Promise<void> {
 
   // Probe up to 3 of each to rule out per-node quirks.
   const results: ProbeResult[] = [];
-  for (const n of agaveNodes.slice(0, 3)) {
-    const r = await probe('agave', n.pubkey as Address, n.tpuQuic!, n.version);
-    results.push(r);
-  }
-  for (const n of fdNodes.slice(0, 3)) {
-    const r = await probe('frankendancer', n.pubkey as Address, n.tpuQuic!, n.version);
+  const probeTargets: Array<[string, typeof agaveNodes[0]]> = [
+    ...agaveNodes.slice(0, 3).map((n) => ['agave', n] as [string, typeof n]),
+    ...fdNodes.slice(0, 3).map((n) => ['frankendancer', n] as [string, typeof n]),
+  ];
+  for (let i = 0; i < probeTargets.length; i++) {
+    const [label, n] = probeTargets[i]!;
+    process.stdout.write(
+      `[${i + 1}/${probeTargets.length}] ${label.padEnd(14)} ${n.pubkey} → ${n.tpuQuic}  `,
+    );
+    const started = Date.now();
+    const r = await probe(label, n.pubkey as Address, n.tpuQuic!, n.version);
+    const took = Date.now() - started;
+    process.stdout.write(`${r.ok ? 'ok' : 'FAIL'} (${took}ms)\n`);
     results.push(r);
   }
 
