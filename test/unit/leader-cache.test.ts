@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createDefaultProvider, startLeaderCache } from '../../src/leader-cache.js';
 import { AtomicSnapshotRef, EMPTY_SNAPSHOT } from '../../src/route-snapshot.js';
 import type { TpuEvent } from '../../src/events.js';

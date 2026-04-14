@@ -24,11 +24,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Type check
+      - name: Type check (src)
         run: npm run typecheck
+
+      - name: Type check (tests)
+        run: npx tsc --noEmit --project tsconfig.test.json
+
+      - name: Lint
+        run: npm run lint
 
       - name: Unit tests
         run: npm run test:unit
+
+      - name: Build
+        run: npm run build
 
       # NOTE: Integration tests (test:integration) are intentionally excluded from CI.
       # They require a live solana-test-validator and a real QUIC-capable network path.
