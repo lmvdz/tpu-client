@@ -22,12 +22,9 @@ export interface TpuIdentity {
  */
 export async function buildIdentity(supplied?: CryptoKeyPair): Promise<TpuIdentity> {
   const ephemeral = !supplied;
-  if (ephemeral) {
-    console.warn(
-      '[tpu-client] No identity keypair supplied — using ephemeral Ed25519 key. ' +
-        'This identity is unstaked and will be first-dropped by validators under load.',
-    );
-  }
+  // NOTE: no warning here — buildIdentity is a low-level utility that callers
+  // (including smoke scripts and tests) legitimately invoke without wanting
+  // a scary banner. The ephemeral-identity warning lives in createTpuClient.
   const keyPair = supplied ?? (await generateEd25519());
 
   const cert = await x509.X509CertificateGenerator.createSelfSigned({
