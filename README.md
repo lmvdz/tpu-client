@@ -198,7 +198,7 @@ const tpu = await createTpuClient({
 | `conn-open` | `identity` | QUIC connection opened to leader |
 | `conn-close` | `identity`, `reason?` | QUIC connection closed |
 | `conn-evict` | `identity`, `reason` | Connection evicted from pool (idle / non-upcoming / LRU cap) |
-| `cert-pin-mismatch` | `identity`, `expected`, `got` | Leader cert pubkey did not match gossip identity; leader quarantined for epoch |
+| `cert-pin-mismatch` | `identity`, `expected`, `got` | Server cert SPKI did not match gossip identity. In default `'observe'` mode this is informational only; in `'strict'` mode the leader is rejected and quarantined until the next cluster-refresh |
 | `send` | `signature`, `attempts` | Fires once per `sendRawTransaction` with full attempt detail |
 | `error` | `error: TpuError` | Non-fatal error during background refresh |
 
@@ -217,7 +217,19 @@ Firedancer is Jump Trading's independent validator client. It requires:
 - ALPN set to `solana-tpu` — handled automatically.
 - A valid Ed25519 TLS certificate in the `ClientHello` — generated from your `identity` keypair.
 
-Frankendancer (Firedancer networking + Agave consensus) has been handling roughly 20% of leader slots on mainnet. This library is tested against both. See: https://docs.firedancer.io
+Frankendancer (Firedancer networking + Agave consensus) has been handling roughly 20% of leader slots on mainnet. This library is tested against both — `npm run smoke:firedancer` performs a live comparative probe. See: https://docs.firedancer.io
+
+### Server cert pinning: `pinMode`
+
+Our QUIC client ALWAYS presents the client cert (required for stake-weighted QoS) and ALWAYS performs TLS. Whether we ALSO verify the **server's** cert pubkey against the gossip-advertised identity is governed by `pinMode`:
+
+| Mode | Behavior | When to use |
+|---|---|---|
+| `'observe'` (default) | Accept the connection regardless of SPKI match; emit `cert-pin-mismatch` event when they don't match | The safe default. Works universally on mainnet. |
+| `'strict'` | Reject connection on SPKI mismatch; quarantine the leader until cluster-refresh | Pure-Agave fleets where you have ground truth that every server presents an identity-signed cert. |
+| `'off'` | Do not inspect server cert at all | Benchmarking, or environments where pin-mismatch noise is undesirable. |
+
+**Why `'observe'` and not `'strict'` by default?** Empirical probing of mainnet-beta (April 2026, `npm run smoke:firedancer`) shows that **100% of Frankendancer nodes** and a **meaningful fraction of Agave nodes** present server certs whose SPKI does not equal the gossip identity — likely due to per-connection ephemeral certs, validator-side TLS terminators, or cloud-native load balancers in front of validator machines. Strict pinning would silently drop ~20%+ of the real leader schedule. In `'observe'` mode you still get the telemetry signal (the event fires) without the connectivity loss.
 
 ### web3.js v1 users
 

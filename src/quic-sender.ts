@@ -49,6 +49,20 @@ const INNER = Symbol('quic-client');
 // Public types
 // ---------------------------------------------------------------------------
 
+/**
+ * Server-cert pin enforcement mode.
+ *
+ *   - `'strict'`  — reject the connection if the server cert SPKI does not match the
+ *                   gossip-advertised identity pubkey. Only safe in fleets you know
+ *                   present identity-signed certs (pure Agave, no LBs).
+ *   - `'observe'` — emit a `cert-pin-mismatch` TpuEvent on mismatch but accept the
+ *                   connection. Default. Works against real mainnet in April 2026
+ *                   where Frankendancer presents per-connection certs (SPKI !=
+ *                   identity) and some Agave nodes sit behind load balancers.
+ *   - `'off'`     — do not inspect server certs at all.
+ */
+export type PinMode = 'strict' | 'observe' | 'off';
+
 export interface OpenArgs {
   /** Leader identity (base58 Address) — used for cert-pin check. */
   identity: Address;
@@ -60,6 +74,8 @@ export interface OpenArgs {
   tpuIdentity: TpuIdentity;
   /** Event emitter for observability. */
   emit: EventEmitter;
+  /** Cert-pin enforcement mode. Default: 'observe'. */
+  pinMode?: PinMode;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +84,7 @@ export interface OpenArgs {
 
 export async function openTpuQuicConn(args: OpenArgs): Promise<QuicConnection> {
   const { host, port } = parseHostPort(args.addr);
+  const pinMode: PinMode = args.pinMode ?? 'observe';
 
   // Decode base58 Address → 32 raw bytes for pubkey pinning.
   // getAddressEncoder().encode() returns ReadonlyUint8Array; copy to a plain Uint8Array.
@@ -78,6 +95,23 @@ export async function openTpuQuicConn(args: OpenArgs): Promise<QuicConnection> {
   // @matrixai/quic config.key / config.cert accept PEM (string | Uint8Array).
   const certPem = derToPemCert(args.tpuIdentity.certDer);
   const keyPem = await privateKeyToPem(args.tpuIdentity.keyPair.privateKey);
+
+  // `verifyPeer: true` is required for the client cert to be presented (QoS),
+  // so even in `pinMode: 'off'` we install a permissive callback rather than
+  // disabling peer verification.
+  const verifyCallback = (
+    certs: Array<Uint8Array>,
+    _ca: Array<Uint8Array>,
+  ): Promise<CryptoError | undefined> =>
+    Promise.resolve(
+      evaluatePinDecision({
+        certs,
+        expectedPubkey,
+        identity: args.identity,
+        pinMode,
+        emit: args.emit,
+      }),
+    );
 
   const client = await withTimeout(
     CONNECT_TIMEOUT_MS,
@@ -93,30 +127,7 @@ export async function openTpuQuicConn(args: OpenArgs): Promise<QuicConnection> {
         // internally, so self-signed validator certs are forwarded to the callback
         // rather than rejected by BoringSSL path-building.
         verifyPeer: true,
-        verifyCallback: async (
-          certs: Array<Uint8Array>,
-          _ca: Array<Uint8Array>,
-        ): Promise<CryptoError | undefined> => {
-          if (certs.length === 0 || certs[0] === undefined) {
-            return CryptoError.BadCertificate;
-          }
-          let got: Uint8Array;
-          try {
-            got = extractEd25519PubkeyFromCert(certs[0]);
-          } catch {
-            return CryptoError.BadCertificate;
-          }
-          if (!uint8ArraysEqual(got, expectedPubkey)) {
-            args.emit({
-              type: 'cert-pin-mismatch',
-              identity: args.identity,
-              expected: hex(expectedPubkey),
-              got: hex(got),
-            });
-            return CryptoError.BadCertificate;
-          }
-          return undefined; // pass
-        },
+        verifyCallback,
         // Client cert for stake-weighted QoS.
         // @matrixai/quic expects PEM (string | Uint8Array containing PEM text).
         cert: certPem,
@@ -224,6 +235,49 @@ export function extractEd25519PubkeyFromCert(der: Uint8Array): Uint8Array {
     throw new Error('SPKI algorithm OID is not Ed25519 (1.3.101.112)');
   }
   return spki.slice(12); // last 32 bytes = raw pubkey
+}
+
+// ---------------------------------------------------------------------------
+// evaluatePinDecision (exported for testing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure decision function for the TLS peer-cert check. Extracted so it can be
+ * unit-tested without a live QUIC handshake.
+ *
+ * Returns `undefined` to accept the connection; returns a `CryptoError` to
+ * reject. In `'observe'` mode a mismatch emits the `cert-pin-mismatch` event
+ * for telemetry but still accepts, matching empirical mainnet behavior where
+ * Frankendancer (and some Agave) validators present server certs whose SPKI
+ * does not equal the gossip identity.
+ */
+export function evaluatePinDecision(args: {
+  certs: Array<Uint8Array>;
+  expectedPubkey: Uint8Array;
+  identity: Address;
+  pinMode: PinMode;
+  emit: EventEmitter;
+}): CryptoError | undefined {
+  if (args.pinMode === 'off') return undefined;
+  if (args.certs.length === 0 || args.certs[0] === undefined) {
+    return CryptoError.BadCertificate;
+  }
+  let got: Uint8Array;
+  try {
+    got = extractEd25519PubkeyFromCert(args.certs[0]);
+  } catch {
+    return CryptoError.BadCertificate;
+  }
+  if (!uint8ArraysEqual(got, args.expectedPubkey)) {
+    args.emit({
+      type: 'cert-pin-mismatch',
+      identity: args.identity,
+      expected: hex(args.expectedPubkey),
+      got: hex(got),
+    });
+    if (args.pinMode === 'strict') return CryptoError.BadCertificate;
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ import { buildIdentity } from './identity.js';
 import { createSlotTracker } from './slot-tracker.js';
 import { startLeaderCache } from './leader-cache.js';
 import { QuicPool } from './quic-pool.js';
-import { openTpuQuicConn, sendOnce } from './quic-sender.js';
+import { openTpuQuicConn, sendOnce, type PinMode } from './quic-sender.js';
 import { AtomicSnapshotRef, EMPTY_SNAPSHOT } from './route-snapshot.js';
 import { noopEmitter, type EventEmitter, type LeaderAttempt } from './events.js';
 import { TpuSendError } from './errors.js';
@@ -24,6 +24,15 @@ export interface CreateTpuClientOptions {
   poolCap?: number;
   onEvent?: EventEmitter;
   signal?: AbortSignal;
+  /**
+   * Server cert-pin mode. Default `'observe'` — accept connections but emit a
+   * `cert-pin-mismatch` TpuEvent when the server cert SPKI doesn't match the
+   * gossip identity. Use `'strict'` only if you know your target fleet presents
+   * identity-signed certs (pure Agave, no load balancers). Empirically, ~100%
+   * of Frankendancer nodes and a meaningful fraction of Agave nodes present
+   * certs whose SPKI does NOT equal the validator identity as of April 2026.
+   */
+  pinMode?: PinMode;
 }
 
 export interface TpuClient {
@@ -54,11 +63,17 @@ const DEFAULT_MAX_STREAMS = { staked: 128, unstaked: 8 };
 export async function createTpuClient(opts: CreateTpuClientOptions): Promise<TpuClient> {
   const userEmit = opts.onEvent ?? noopEmitter;
 
-  // Quarantine: track identities with cert-pin-mismatch; clear on cluster-refresh.
+  // Quarantine: track identities whose STRICT pin check rejected; clear on
+  // cluster-refresh (close enough to epoch rotation cadence). In 'observe' mode
+  // (default) the event fires informatively and does NOT quarantine because the
+  // connection succeeded — quarantining observe-mode mismatches would lock the
+  // client out of ~20%+ of real mainnet leaders.
   const quarantine = new Set<Address>();
+  const pinMode = opts.pinMode ?? 'observe';
   const emit: EventEmitter = (e: TpuEvent): void => {
-    if (e.type === 'cert-pin-mismatch') quarantine.add(e.identity);
-    // Clear quarantine on cluster-refresh — close enough to epoch rotation cadence.
+    if (e.type === 'cert-pin-mismatch' && pinMode === 'strict') {
+      quarantine.add(e.identity);
+    }
     if (e.type === 'cluster-refresh') quarantine.clear();
     userEmit(e);
   };
@@ -146,6 +161,7 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
           maxStreams: args.maxStreams,
           tpuIdentity,
           emit,
+          pinMode,
         }),
       maxStreamsFor: (identity: Address): number =>
         stakedIdentities.has(identity) ? maxStreams.staked : maxStreams.unstaked,
