@@ -1,21 +1,19 @@
 {
-	"compilerOptions": {
-		"types": ["node"],
-		"module": "NodeNext",
-		"target": "ESNext",
-		"esModuleInterop": true,
-		"preserveConstEnums": true,
-		"sourceMap": true,
-		"resolveJsonModule": true,
-		"declaration": true,
-		"declarationMap": true,
-		"skipLibCheck": true,
-		"experimentalDecorators": true,
-		"emitDecoratorMetadata": true,
-		"baseUrl": ".",
-		"rootDir": "src",
-		"outDir": "./lib"
-	},
-	"include": ["src/**/*"],
-	"exclude": ["node_modules"]
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "outDir": "lib",
+    "rootDir": "src",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["test", "node_modules", "lib"]
 }
