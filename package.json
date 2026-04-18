@@ -1,6 +1,6 @@
 {
-  "name": "tpu-client",
-  "version": "2.0.0-alpha.6",
+  "name": "solana-tpu-client",
+  "version": "2.0.0-alpha.7",
   "type": "module",
   "description": "TPU-direct Solana transaction submission for @solana/kit apps. QUIC, staked QoS, stake-weighted stream allocation, observability events.",
   "main": "./lib/index.js",
