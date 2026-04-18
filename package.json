@@ -1,6 +1,6 @@
 {
   "name": "tpu-client",
-  "version": "2.0.0-alpha.5",
+  "version": "2.0.0-alpha.6",
   "type": "module",
   "description": "TPU-direct Solana transaction submission for @solana/kit apps. QUIC, staked QoS, stake-weighted stream allocation, observability events.",
   "main": "./lib/index.js",
@@ -28,8 +28,7 @@
     "README.md",
     "LICENSE",
     "MIGRATION.md",
-    "CHANGELOG.md",
-    "patches"
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=22.11"
@@ -46,13 +45,12 @@
   "homepage": "https://github.com/lmvdz/tpu-client#readme",
   "peerDependencies": {
     "@matrixai/logger": "^4.0.3",
-    "@matrixai/quic": "^2.0.9",
     "@peculiar/x509": "^1.12.0",
     "@solana/kit": "^6.8.0"
   },
   "devDependencies": {
     "@matrixai/logger": "^4.0.3",
-    "@matrixai/quic": "^2.0.9",
+    "@matrixai/quic": "github:lmvdz/js-quic#release/tpu-fix",
     "@peculiar/x509": "^1.12.0",
     "@solana-program/system": "^0.6.0",
     "@solana/kit": "^6.8.0",
@@ -62,8 +60,6 @@
     "eslint": "^8.57.0",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-prettier": "^5.1.3",
-    "patch-package": "^8.0.1",
-    "postinstall-postinstall": "^2.1.0",
     "prettier": "^3.3.0",
     "tsx": "^4.16.0",
     "typescript": "^5.9.3",
@@ -78,7 +74,12 @@
     "format": "prettier --write './src/**/*.ts'",
     "typecheck": "tsc --noEmit",
     "smoke:firedancer": "tsx scripts/firedancer-smoke.ts",
-    "smoke:devnet": "DEVNET_SMOKE=1 tsx scripts/devnet-smoke.ts",
-    "postinstall": "patch-package"
+    "smoke:devnet": "DEVNET_SMOKE=1 tsx scripts/devnet-smoke.ts"
+  },
+  "dependencies": {
+    "@matrixai/quic": "github:lmvdz/js-quic#release/tpu-fix"
+  },
+  "overrides": {
+    "@matrixai/quic": "github:lmvdz/js-quic#release/tpu-fix"
   }
 }
