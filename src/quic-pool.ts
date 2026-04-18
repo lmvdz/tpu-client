@@ -1,7 +1,9 @@
 import type { Address } from '@solana/kit';
 import type { EventEmitter } from './events.js';
 
-const DEFAULT_POOL_CAP = 1024;
+/** F12: default pool cap reduced from 1024 to 64.
+ *  Steady state needs ~fanout (4) + 32 upcoming leaders = <50; 64 gives headroom. */
+const DEFAULT_POOL_CAP = 64;
 const IDLE_EVICT_MS = 30_000;
 
 export interface QuicConnection {
@@ -55,6 +57,8 @@ export class QuicPool {
   readonly #entries = new Map<Address, PoolEntry>();
   readonly #opts: ResolvedOpts;
   #evictorRunning = false;
+  /** F17: drain waiters keyed by identity — resolved when refcount hits 0. */
+  readonly #drainResolvers = new Map<Address, Array<() => void>>();
 
   constructor(opts: QuicPoolOptions) {
     this.#opts = {
@@ -68,6 +72,11 @@ export class QuicPool {
     };
     this.#startEvictor();
     opts.signal.addEventListener('abort', () => { void this.#closeAll('aborted'); }, { once: true });
+  }
+
+  /** F13: number of open entries in the pool. No new Set allocations. */
+  get size(): number {
+    return this.#entries.size;
   }
 
   async acquire(identity: Address, addr: string): Promise<PoolEntry> {
@@ -110,6 +119,14 @@ export class QuicPool {
   release(entry: PoolEntry): void {
     entry.refcount--;
     entry.lastUse = Date.now();
+    // F17: notify drain waiters if refcount hits 0.
+    if (entry.refcount === 0) {
+      const waiters = this.#drainResolvers.get(entry.identity);
+      if (waiters && waiters.length > 0) {
+        const all = waiters.splice(0);
+        for (const resolve of all) resolve();
+      }
+    }
   }
 
   async #ensureCapacity(): Promise<void> {
@@ -155,8 +172,21 @@ export class QuicPool {
     entry.state = 'draining';
     this.#entries.delete(entry.identity); // prevent new acquires from finding it
     this.#opts.emit({ type: 'conn-evict', identity: entry.identity, reason });
-    // refcount is already 0 at call sites above; defensive wait for in-flight completion.
-    while (entry.refcount > 0) await new Promise((r) => setTimeout(r, 25));
+
+    // F17: replace busy-wait polling with a proper waiter promise.
+    if (entry.refcount > 0) {
+      await new Promise<void>((resolve) => {
+        let resolvers = this.#drainResolvers.get(entry.identity);
+        if (!resolvers) {
+          resolvers = [];
+          this.#drainResolvers.set(entry.identity, resolvers);
+        }
+        resolvers.push(resolve);
+      });
+    }
+    // Clean up drain resolver entry.
+    this.#drainResolvers.delete(entry.identity);
+
     await entry.conn.destroy(reason).catch(() => {});
     entry.state = 'closed';
     this.#opts.emit({ type: 'conn-close', identity: entry.identity, reason });
@@ -168,17 +198,57 @@ export class QuicPool {
   }
 }
 
-/** Minimal async semaphore; tryAcquire returns false immediately if saturated. */
+/**
+ * F10: Async semaphore with FIFO wait queue.
+ * tryAcquire() preserves reject-fast behavior; acquire() waits in queue.
+ */
 export class AsyncSemaphore {
   #available: number;
   readonly #initial: number;
-  constructor(initial: number) { this.#initial = initial; this.#available = initial; }
+  readonly #maxWaiters: number;
+  readonly #waiters: Array<() => void> = [];
+
+  constructor(initial: number, maxWaiters?: number) {
+    this.#available = initial;
+    this.#initial = initial;
+    this.#maxWaiters = maxWaiters ?? Math.max(2 * initial, 16);
+  }
+
   tryAcquire(): boolean {
     if (this.#available <= 0) return false;
     this.#available--;
     return true;
   }
+
+  acquire(signal?: AbortSignal): Promise<void> {
+    if (this.#available > 0) { this.#available--; return Promise.resolve(); }
+    if (this.#waiters.length >= this.#maxWaiters) {
+      return Promise.reject(new Error('semaphore queue full'));
+    }
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = (): void => {
+        const idx = this.#waiters.indexOf(resolver);
+        if (idx >= 0) this.#waiters.splice(idx, 1);
+        reject(new Error('aborted'));
+      };
+      const resolver = (): void => { signal?.removeEventListener('abort', onAbort); resolve(); };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.#waiters.push(resolver);
+    });
+  }
+
   // RT2-S1: cap at initial to prevent count growing past max on double-release.
-  release(): void { if (this.#available < this.#initial) this.#available++; }
+  release(): void {
+    const next = this.#waiters.shift();
+    if (next) {
+      next();
+    } else if (this.#available < this.#initial) {
+      this.#available++;
+    }
+  }
+
   get available(): number { return this.#available; }
+
+  /** F10: number of callers waiting in queue. */
+  get waiting(): number { return this.#waiters.length; }
 }

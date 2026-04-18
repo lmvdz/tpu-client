@@ -16,7 +16,11 @@ export type TpuEvent =
   | { type: 'conn-evict'; identity: Address; reason: string }
   | { type: 'cert-pin-mismatch'; identity: Address; expected: string; got: string }
   | { type: 'send'; signature: Signature; attempts: LeaderAttempt[] }
-  | { type: 'error'; error: TpuError };
+  | { type: 'error'; error: TpuError }
+  // F7: stale-snapshot event — emitted when refresh loop errors and snapshot age > 2*TICK_MS.
+  | { type: 'stale-snapshot'; lastRefreshAgeMs: number; reason: string }
+  // F9: ephemeral-identity — replaces console.warn for unstaked identity.
+  | { type: 'ephemeral-identity' };
 
 export type EventEmitter = (e: TpuEvent) => void;
 

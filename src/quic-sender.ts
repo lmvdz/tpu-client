@@ -51,6 +51,7 @@ const CLIENT_CRYPTO: QUICClientCrypto = {
 // ---------------------------------------------------------------------------
 
 const INNER = Symbol('quic-client');
+const WRITE_TIMEOUT_SYM = Symbol('write-timeout-ms');
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -89,6 +90,8 @@ export interface OpenArgs {
   emit: EventEmitter;
   /** Cert-pin enforcement mode. Default: 'observe'. */
   pinMode?: PinMode;
+  /** F14: tunable transport timeouts. Defaults: connectMs=5000, writeMs=2000, destroyMs=2000. */
+  timeouts?: { connectMs?: number; writeMs?: number; destroyMs?: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +101,10 @@ export interface OpenArgs {
 export async function openTpuQuicConn(args: OpenArgs): Promise<QuicConnection> {
   const { host, port } = parseHostPort(args.addr);
   const pinMode: PinMode = args.pinMode ?? 'observe';
+  // F14: resolve tunable timeouts with defaults.
+  const connectTimeoutMs = args.timeouts?.connectMs ?? CONNECT_TIMEOUT_MS;
+  const writeTimeoutMs = args.timeouts?.writeMs ?? WRITE_TIMEOUT_MS;
+  const destroyTimeoutMs = args.timeouts?.destroyMs ?? DESTROY_TIMEOUT_MS;
 
   // Decode base58 Address → 32 raw bytes for pubkey pinning.
   // getAddressEncoder().encode() returns ReadonlyUint8Array; copy to a plain Uint8Array.
@@ -127,7 +134,7 @@ export async function openTpuQuicConn(args: OpenArgs): Promise<QuicConnection> {
     );
 
   const client = await withTimeout(
-    CONNECT_TIMEOUT_MS,
+    connectTimeoutMs,
     QUICClient.createQUICClient({
       host,
       port,
@@ -153,22 +160,23 @@ export async function openTpuQuicConn(args: OpenArgs): Promise<QuicConnection> {
     }),
   );
 
-  const conn: QuicConnection & { [INNER]: QUICClient } = {
+  const conn: QuicConnection & { [INNER]: QUICClient; [WRITE_TIMEOUT_SYM]: number } = {
     isOpen(): boolean {
       return !client.closed;
     },
     async destroy(_reason?: string): Promise<void> {
       // @matrixai/quic destroy() can hang past its own internal close if a
       // lingering stream or deferred send is still draining. Cap it at
-      // DESTROY_TIMEOUT_MS — after that the process-level socket cleanup will
+      // destroyTimeoutMs — after that the process-level socket cleanup will
       // reclaim the fd; keeping callers waiting is worse.
       try {
-        await withTimeout(DESTROY_TIMEOUT_MS, client.destroy({ force: true }));
+        await withTimeout(destroyTimeoutMs, client.destroy({ force: true }));
       } catch {
         // Timeout or already-closed — either way, fire-and-forget.
       }
     },
     [INNER]: client,
+    [WRITE_TIMEOUT_SYM]: writeTimeoutMs,
   };
 
   return conn;
@@ -187,6 +195,9 @@ export async function sendOnce(
     return { kind: 'backpressure', identity: entry.identity };
   }
   const started = Date.now();
+  // F14: use per-connection write timeout if set, else fall back to module constant.
+  const connWithTimeout = entry.conn as QuicConnection & { [WRITE_TIMEOUT_SYM]?: number };
+  const effectiveWriteTimeoutMs = connWithTimeout[WRITE_TIMEOUT_SYM] ?? WRITE_TIMEOUT_MS;
   let abortHandler: (() => void) | undefined;
   let stream: ReturnType<(typeof QUICClient.prototype.connection)['newStream']> | undefined;
   try {
@@ -201,7 +212,7 @@ export async function sendOnce(
     signal.addEventListener('abort', abortHandler, { once: true });
 
     try {
-      await withTimeout(WRITE_TIMEOUT_MS, (async () => {
+      await withTimeout(effectiveWriteTimeoutMs, (async (): Promise<void> => {
         await writer.write(txBytes);
         await writer.close();
       })());

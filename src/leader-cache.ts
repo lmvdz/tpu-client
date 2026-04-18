@@ -217,15 +217,27 @@ export async function startLeaderCache(opts: LeaderCacheOptions): Promise<void> 
    * Refresh staked identities from getVoteAccounts().
    * Only current (non-delinquent) validators with activatedStake > 0n qualify
    * for stake-weighted QoS — delinquent nodes are not leading slots.
+   * F4: atomic swap via local Set, then swap in. Also validates activatedStake type.
    */
   async function refreshStakedIdentities(): Promise<void> {
     if (opts.stakedIdentities === undefined) return;
     const result = await opts.rpc.getVoteAccounts().send();
-    opts.stakedIdentities.clear();
+    // F4: build fresh set locally, then swap atomically (single synchronous block).
+    const fresh = new Set<Address>();
     for (const va of result.current) {
-      if (va.activatedStake > 0n) {
-        opts.stakedIdentities.add(va.nodePubkey as Address);
+      // F4: validate activatedStake is bigint before using it.
+      if (typeof va.activatedStake !== 'bigint') {
+        opts.emit({ type: 'error', error: { kind: 'rpc-error', source: 'stake-refresh', cause: `activatedStake is not bigint for ${String(va.nodePubkey)}` } });
+        continue;
       }
+      if (va.activatedStake > 0n) {
+        fresh.add(va.nodePubkey as Address);
+      }
+    }
+    // Atomic swap: clear and repopulate in one synchronous block.
+    opts.stakedIdentities.clear();
+    for (const pk of fresh) {
+      opts.stakedIdentities.add(pk);
     }
   }
 
@@ -233,9 +245,19 @@ export async function startLeaderCache(opts: LeaderCacheOptions): Promise<void> 
   await refreshClusterNodes();
   await refreshStakedIdentities();
   let epochInfo = await opts.rpc.getEpochInfo().send();
+  // F3: validate slotsInEpoch on initial fetch.
+  if (epochInfo.slotsInEpoch <= 0n) {
+    throw new Error(`invalid slotsInEpoch: ${String(epochInfo.slotsInEpoch)}`);
+  }
   let epochSchedule = await opts.rpc.getEpochSchedule().send();
+  // F3: validate slotsPerEpoch on initial fetch.
+  if (epochSchedule.slotsPerEpoch <= 0n) {
+    throw new Error(`invalid slotsPerEpoch: ${String(epochSchedule.slotsPerEpoch)}`);
+  }
   let lastClusterMs = Date.now();
   let generation = 0;
+  // F7: track last successful refresh time for stale-snapshot detection.
+  let lastSuccessfulRefreshMs = Date.now();
 
   const provider: LeaderDiscoveryProvider =
     opts.provider ??
@@ -274,16 +296,27 @@ export async function startLeaderCache(opts: LeaderCacheOptions): Promise<void> 
           opts.emit({ type: 'cluster-refresh', nodes: clusterNodes.size });
         }
 
-        // Epoch rollover detection: refresh when we've advanced into the next epoch.
+        // F3: Epoch rollover detection — validate new epoch info before committing.
         if (slot >= epochInfo.absoluteSlot - epochInfo.slotIndex + epochInfo.slotsInEpoch) {
-          epochInfo = await opts.rpc.getEpochInfo().send();
-          epochSchedule = await opts.rpc.getEpochSchedule().send();
+          const newEpochInfo = await opts.rpc.getEpochInfo().send();
+          const newEpochSchedule = await opts.rpc.getEpochSchedule().send();
+          if (newEpochInfo.slotsInEpoch <= 0n) {
+            opts.emit({ type: 'error', error: { kind: 'rpc-error', source: 'epoch-info', cause: `invalid slotsInEpoch: ${String(newEpochInfo.slotsInEpoch)}` } });
+            // Keep prior values, skip rollover.
+          } else if (newEpochSchedule.slotsPerEpoch <= 0n) {
+            opts.emit({ type: 'error', error: { kind: 'rpc-error', source: 'epoch-info', cause: `invalid slotsPerEpoch: ${String(newEpochSchedule.slotsPerEpoch)}` } });
+            // Keep prior values, skip rollover.
+          } else {
+            epochInfo = newEpochInfo;
+            epochSchedule = newEpochSchedule;
+          }
         }
 
         // Rebuild the leader window and publish a new snapshot.
         const result = await provider.getLeaders(slot, opts.fanoutSlots);
         const snap = makeSnapshot(slot, result.leaders, ++generation);
         opts.snapshotRef.store(snap);
+        lastSuccessfulRefreshMs = Date.now();
         opts.emit({
           type: 'leaders-refresh',
           startSlot: slot,
@@ -291,11 +324,13 @@ export async function startLeaderCache(opts: LeaderCacheOptions): Promise<void> 
           source: result.source,
         });
       } catch (err) {
-        // RT2-C2/RT4-C1: emit background RPC errors so ops can detect stale snapshots.
-        // TODO: replace with a dedicated { kind: 'rpc-error' } variant once errors.ts is updated.
-        // Note: absence of 'leaders-refresh' or 'cluster-refresh' events for > 2*TICK_MS
-        // indicates the loop is dead or continuously erroring.
-        opts.emit({ type: 'error', error: { kind: 'slot-subscription', cause: `leader-cache: ${String(err)}` } });
+        // F8: emit rpc-error with proper source instead of repurposed slot-subscription.
+        opts.emit({ type: 'error', error: { kind: 'rpc-error', source: 'leader-cache', cause: String(err) } });
+        // F7: emit stale-snapshot if snapshot hasn't been updated in > 2*TICK_MS.
+        const ageMs = Date.now() - lastSuccessfulRefreshMs;
+        if (ageMs > 2 * TICK_MS) {
+          opts.emit({ type: 'stale-snapshot', lastRefreshAgeMs: ageMs, reason: String(err) });
+        }
       }
 
       await sleep(TICK_MS, opts.signal);

@@ -4,7 +4,6 @@ import type { EventEmitter } from './events.js';
 const MIN_SAMPLES = 12;
 const STALL_MS = 2_000;
 const POLL_MS = 400;
-const MAX_SAMPLES = 12;
 
 export interface SlotTrackerOptions {
   rpc: Rpc<SolanaRpcApi>;
@@ -25,13 +24,13 @@ export interface SlotTracker {
 export async function createSlotTracker(opts: SlotTrackerOptions): Promise<SlotTracker> {
   const { rpc, rpcSubscriptions, emit, signal } = opts;
 
-  // Inline ring buffer of recent slots (BigInt64Array for efficiency).
-  const samples = new BigInt64Array(MAX_SAMPLES);
+  // F16: plain counter replaces the typed ring buffer (only sampleCount was used for gating).
   let sampleCount = 0;
-  let sampleHead = 0;
   let lastSlotMs = 0;
   let currentEstimate: bigint | null = null;
   let pollFallbackActive = false;
+  // F15: track whether a stall event has been emitted; don't re-fire until isFresh() recovers.
+  let stallEmitted = false;
 
   const { promise: readyPromise, resolve: resolveReady } = createOnceResolver();
 
@@ -49,9 +48,13 @@ export async function createSlotTracker(opts: SlotTrackerOptions): Promise<SlotT
           const slot = n.slot;
           const parent = n.parent;
           const skipped = Number(slot - parent - 1n);
-          recordSample(slot);
+          sampleCount++;
           lastSlotMs = Date.now();
           currentEstimate = slot;
+          // F15: clear stall state on fresh slot events.
+          if (stallEmitted) {
+            stallEmitted = false;
+          }
           emit({ type: 'slot', slot, parent, skipped: Math.max(0, skipped) });
           if (sampleCount >= MIN_SAMPLES) resolveReady();
         }
@@ -70,13 +73,19 @@ export async function createSlotTracker(opts: SlotTrackerOptions): Promise<SlotT
     const ageMs = lastSlotMs === 0 ? Infinity : Date.now() - lastSlotMs;
     if (ageMs > STALL_MS) {
       pollFallbackActive = true;
-      emit({ type: 'slot-stall', lastSlotAgeMs: Number.isFinite(ageMs) ? ageMs : STALL_MS });
+      // F15: emit slot-stall only once per stall period; don't re-fire until isFresh() recovers.
+      if (!stallEmitted) {
+        stallEmitted = true;
+        emit({ type: 'slot-stall', lastSlotAgeMs: Number.isFinite(ageMs) ? ageMs : STALL_MS });
+      }
       try {
         const slot = await rpc.getSlot({ commitment: 'processed' }).send({ abortSignal: signal });
         currentEstimate = slot;
         const isColdStart = lastSlotMs === 0;
         // RT2-C3: update lastSlotMs so isFresh() returns true after successful poll.
         lastSlotMs = Date.now();
+        // F15: reset stall flag since we got a fresh slot via polling.
+        stallEmitted = false;
         if (isColdStart) resolveReady(); // cold-start fallback
       } catch {
         // keep stale estimate; next tick will retry
@@ -96,12 +105,6 @@ export async function createSlotTracker(opts: SlotTrackerOptions): Promise<SlotT
       return lastSlotMs !== 0 && Date.now() - lastSlotMs < STALL_MS;
     },
   };
-
-  function recordSample(slot: bigint): void {
-    samples[sampleHead] = slot;
-    sampleHead = (sampleHead + 1) % MAX_SAMPLES;
-    if (sampleCount < MAX_SAMPLES) sampleCount++;
-  }
 }
 
 function createOnceResolver(): { promise: Promise<void>; resolve: () => void } {

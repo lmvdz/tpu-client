@@ -33,6 +33,8 @@ const sig = await tpu.sendTransaction(tx, [signer]);
 
 ## After (v2)
 
+> **Note:** This is a compilable skeleton — payer must be pre-funded and the recipient must be a real address. See `test/integration/validator.test.ts` for a runnable example on `solana-test-validator`.
+
 ```ts
 import { readFileSync } from 'node:fs';
 import {
@@ -54,7 +56,7 @@ import {
   createTpuClient,
   sendAndConfirmTpuTransactionFactory,
   ed25519KeyPairFromSolanaSecret,
-} from '@solana/tpu-client';
+} from 'tpu-client';
 
 const rpc = createSolanaRpc('https://api.mainnet-beta.solana.com');
 const rpcSubscriptions = createSolanaRpcSubscriptions(
@@ -70,13 +72,13 @@ const identity = await ed25519KeyPairFromSolanaSecret(secret);
 const tpu = await createTpuClient({ rpc, rpcSubscriptions, identity });
 
 // Build + sign your transaction with @solana/kit.
-const payer = await generateKeyPairSigner();
-const recipient = address('11111111111111111111111111111111'); // replace with real address
+const payer = await generateKeyPairSigner(); /* replace with a pre-funded signer */
+const RECIPIENT = address('/* replace with a real, funded recipient */');
 const { value: blockhash } = await rpc.getLatestBlockhash().send();
 
 const transferIx = getTransferSolInstruction({
   source: payer,
-  destination: recipient,
+  destination: RECIPIENT,
   amount: lamports(1_000_000n), // 0.001 SOL
 });
 
@@ -142,7 +144,7 @@ If you need to run v1 alongside v2 during migration, you can alias the packages 
 {
   "dependencies": {
     "tpu-client-v1": "npm:tpu-client@^1",
-    "@solana/tpu-client": "^2"
+    "tpu-client": "^2"
   }
 }
 ```
