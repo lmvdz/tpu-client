@@ -240,6 +240,39 @@ describe('slot-tracker', () => {
     expect(subscribeCount).toBe(2);
   });
 
+  it('F15: slot-stall fires at most once per stall period', async () => {
+    vi.useFakeTimers();
+    const { iterable } = createControlledNotifications();
+
+    const fakeRpc = {
+      // Make getSlot hang so we don't resolve and reset stallEmitted.
+      getSlot: () => ({ send: (): Promise<bigint> => new Promise(() => {}) }),
+    };
+    const fakeSubs = {
+      slotNotifications: () => ({
+        subscribe: async () => iterable,
+      }),
+    };
+
+    const stallEvents: any[] = [];
+    const localEmit = (e: any) => {
+      if (e.type === 'slot-stall') stallEvents.push(e);
+    };
+
+    await createSlotTracker({
+      rpc: fakeRpc as any,
+      rpcSubscriptions: fakeSubs as any,
+      emit: localEmit,
+      signal: abortController.signal,
+    });
+
+    // Advance 5 seconds — watchdog fires every 400ms, but stall-emit only once.
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    // Should have emitted exactly 1 slot-stall event.
+    expect(stallEvents.length).toBe(1);
+  });
+
   it('abort signal closes subscription loop', async () => {
     const { iterable, push } = createControlledNotifications();
 

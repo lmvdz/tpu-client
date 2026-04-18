@@ -1,5 +1,13 @@
 # Design: TPU Client Rewrite on @solana/kit 3.x
 
+> **Note — Superseded for shipping types.** This design was written before v2.0.0-alpha.0. The public types have since been refined:
+> - `TpuError` split into `TpuLeaderError` + `TpuSendFailure` (alpha.2); `TpuError` retained as backward-compat union.
+> - `LeaderAttempt` is a discriminated union on `ok`.
+> - `TpuEvent` gained `stale-snapshot`, `ephemeral-identity`; `leader-cache` errors use `rpc-error` not `slot-subscription`.
+> - `close()` takes `{ timeoutMs? }`.
+> - `CreateTpuClientOptions` gained `pinMode`, `timeouts`, `getStats`.
+> See [CHANGELOG.md](../../CHANGELOG.md) for the authoritative shipped surface.
+
 ## Approach
 
 A TPU-direct transaction submission client built on `@solana/kit` 3.x RPC/subscription primitives plus `@matrixai/quic` for stake-weighted QUIC transport. The client accepts a user-supplied Ed25519 identity keypair (the QoS identity), mints an X.509 leaf cert with `@peculiar/x509`, fans out to the next N leaders' TPU-QUIC endpoints, and returns a per-attempt result. Confirmation is provided via a dedicated `sendAndConfirmTpuTransactionFactory` that mirrors kit's confirmation state machine — we do NOT pretend to plug into kit's `sendAndConfirmTransactionFactory`, which does not take a pluggable sender.

@@ -133,7 +133,7 @@ All 15 concerns shipped on branch `rewrite/kit-v3`. Batch summary:
 
 **Known limitations (tracked in follow-up):**
 - Integration test exists but gated behind `TPU_INTEGRATION=1`; requires `solana-test-validator` on PATH — not run in CI yet.
-- `stakedIdentities` set in tpu-client is unpopulated; `maxStreamsPerConn.staked` currently unused pending `getVoteAccounts` integration.
+- `stakedIdentities` is populated every 5 minutes via `getVoteAccounts`. Between process start and first successful call, every leader is treated as unstaked (smaller stream budget).
 - Firedancer ALPN verification on a live node (NOTES-04 Q3) still pending manual smoke test.
 - Quarantine set is cleared on `cluster-refresh` (5min) as a practical proxy for epoch rotation; exact epoch-change detection is a follow-up.
 

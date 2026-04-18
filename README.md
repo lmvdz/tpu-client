@@ -1,4 +1,4 @@
-# @solana/tpu-client
+# tpu-client
 
 TPU-direct transaction submission for `@solana/kit` apps — send transactions straight to upcoming leaders over QUIC, bypassing RPC rate limits and reducing time-to-land.
 
@@ -6,7 +6,7 @@ TPU-direct transaction submission for `@solana/kit` apps — send transactions s
 
 ## What this is
 
-`@solana/tpu-client` is a TypeScript library that opens QUIC connections to the next N Solana leader nodes and fans out your signed transaction bytes directly, rather than routing through an RPC `sendTransaction` call. This mirrors what the Solana CLI and the Rust `TpuClient` do under the hood.
+`tpu-client` is a TypeScript library that opens QUIC connections to the next N Solana leader nodes and fans out your signed transaction bytes directly, rather than routing through an RPC `sendTransaction` call. This mirrors what the Solana CLI and the Rust `TpuClient` do under the hood.
 
 **What it solves:**
 
@@ -23,12 +23,12 @@ Built on `@solana/kit` 3.x primitives (no `@solana/web3.js` dependency), `@matri
 
 | Option | Hosted? | Stake-weighted QoS | Extra fees | Notes |
 |---|---|---|---|---|
-| **@solana/tpu-client** | No — self-hosted | Yes, via your own staked keypair | None | Pure TS, open source, you control the identity |
+| **tpu-client** | No — self-hosted | Yes, via your own staked keypair | None | Pure TS, open source, you control the identity |
 | **Helius `sendSmartTransaction`** | Yes | Helius handles it | Per-request or subscription | Easiest path if you already use Helius RPC |
 | **Jito bundle endpoint** | Yes | Jito validators only | Tip required | Optimal for MEV / priority ordering within a block |
 | **Triton Jet** | Yes | Triton infrastructure | Subscription | Managed TPU relay with SLA |
 
-Use `@solana/tpu-client` when:
+Use `tpu-client` when:
 - You need full control over QoS identity and connection lifecycle.
 - You want landing telemetry per attempt for SLAs or alerting.
 - You are operating your own validator or staking infrastructure and already hold a funded identity keypair.
@@ -41,7 +41,7 @@ Use `@solana/tpu-client` when:
 Requires **Node.js ≥ 22.11** (ESM only; native QUIC bindings require a recent Node ABI).
 
 ```bash
-npm install @solana/tpu-client @solana/kit @matrixai/quic @peculiar/x509
+npm install tpu-client @solana/kit @matrixai/quic @peculiar/x509
 ```
 
 `@solana/kit`, `@matrixai/quic`, and `@peculiar/x509` are peer dependencies and must appear in your project's `dependencies`.
@@ -53,6 +53,8 @@ npm install @solana/tpu-client @solana/kit @matrixai/quic @peculiar/x509
 ## Quickstart
 
 This example transfers 0.001 SOL from a generated payer to a recipient using the `@solana-program/system` package.
+
+> **Note:** This is a compilable skeleton — payer must be pre-funded and the recipient must be a real address. See `test/integration/validator.test.ts` for a runnable example on `solana-test-validator`.
 
 ```ts
 import { readFileSync } from 'node:fs';
@@ -75,7 +77,7 @@ import {
   createTpuClient,
   sendAndConfirmTpuTransactionFactory,
   ed25519KeyPairFromSolanaSecret,
-} from '@solana/tpu-client';
+} from 'tpu-client';
 
 // 1. Load your staked identity (64-byte solana-keygen JSON array).
 const secretBytes = new Uint8Array(
@@ -93,13 +95,13 @@ const rpcSubscriptions = createSolanaRpcSubscriptions(
 const tpu = await createTpuClient({ rpc, rpcSubscriptions, identity });
 
 // 4. Build and sign a SOL transfer with @solana/kit + @solana-program/system.
-const payer = await generateKeyPairSigner();
-const recipient = address('11111111111111111111111111111111'); // replace with real address
+const payer = await generateKeyPairSigner(); /* replace with a pre-funded signer */
+const RECIPIENT = address('/* replace with a real, funded recipient */');
 const { value: blockhash } = await rpc.getLatestBlockhash().send();
 
 const transferIx = getTransferSolInstruction({
   source: payer,
-  destination: recipient,
+  destination: RECIPIENT,
   amount: lamports(1_000_000n), // 0.001 SOL
 });
 
@@ -149,7 +151,7 @@ When you pass `identity: CryptoKeyPair` to `createTpuClient`, the library:
 
 ```ts
 import { readFileSync } from 'node:fs';
-import { ed25519KeyPairFromSolanaSecret } from '@solana/tpu-client';
+import { ed25519KeyPairFromSolanaSecret } from 'tpu-client';
 
 const raw = new Uint8Array(
   JSON.parse(readFileSync('/path/to/id.json', 'utf8')) as number[],
@@ -168,7 +170,7 @@ If you omit `identity`, an ephemeral (unstaked) keypair is generated and a warni
 Pass `onEvent` to observe all internal state transitions:
 
 ```ts
-import type { TpuEvent } from '@solana/tpu-client';
+import type { TpuEvent } from 'tpu-client';
 
 const tpu = await createTpuClient({
   rpc,
@@ -261,7 +263,9 @@ If you are migrating from the previous `TpuConnection` API (which extended `@sol
 
 ## Reference
 
-All exports from the `@solana/tpu-client` package:
+All exports from the `tpu-client` package:
+
+> **Type documentation:** Full JSDoc is emitted to `lib/*.d.ts` during build. Use your IDE's hover/IntelliSense for field-level descriptions.
 
 | Export | Kind | Description |
 |---|---|---|
@@ -270,9 +274,10 @@ All exports from the `@solana/tpu-client` package:
 | `ed25519KeyPairFromSolanaSecret(bytes)` | `async function` | Import a 64-byte `solana-keygen` JSON file into a `CryptoKeyPair` |
 | `ed25519KeyPairFromSeed(seed)` | `async function` | Import a 32-byte Ed25519 seed into a `CryptoKeyPair` |
 | `buildIdentity(keypair?)` | `async function` | Build a `TpuIdentity` (keypair + X.509 cert) from a supplied or ephemeral keypair |
-| `TpuSendError` | `class` | Thrown by `sendRawTransaction` on total failure; carries `details: TpuError` |
+| `noopEmitter` | `const` | No-op `EventEmitter` — useful as a default when no `onEvent` handler is wired |
+| `TpuSendError` | `class` | Thrown by `sendRawTransaction` on total failure; carries `details: TpuError`. Note: `createTpuClient` may throw `TypeError` for invalid construction options (e.g. `fanoutSlots` out of range) — those are programming errors, not `TpuSendError`. |
 | `CreateTpuClientOptions` | `interface` | Options for `createTpuClient` |
-| `TpuClient` | `interface` | `{ ready, sendRawTransaction, close }` |
+| `TpuClient` | `interface` | `{ ready, sendRawTransaction, close, getStats }` — see below for `ready` and `close` semantics |
 | `SendResult` | `interface` | `{ signature: Signature; attempts: LeaderAttempt[] }` |
 | `TpuConfirmFactoryCfg` | `interface` | Config for `sendAndConfirmTpuTransactionFactory` |
 | `TpuConfirmOptions` | `interface` | Per-call options: `commitment`, `abortSignal`, `lastValidBlockHeight` |
@@ -284,9 +289,40 @@ All exports from the `@solana/tpu-client` package:
 | `LeaderAttempt` | `type` | Discriminated union on `ok`: `{ok:true; rttMs}` or `{ok:false; error: TpuLeaderError}`. `ok:true` means QUIC stream write completed — not landing confirmation. |
 | `LeaderInfo` | `interface` | `{ identity: Address; tpuQuicAddr: string \| null; stake?: bigint }` |
 | `LeaderDiscoveryProvider` | `interface` | Pluggable leader discovery interface |
-| `TpuIdentity` | `interface` | `{ keyPair, certDer, pubkeyRaw, ephemeral }` |
+| `TpuIdentity` | `interface` | `{ keyPair, certDer, certPem, privateKeyPem, pubkeyRaw, ephemeral }` |
 | `EventEmitter` | `type` | `(e: TpuEvent) => void` |
-| `evaluatePinDecision` | `function` | Pure unit-testable cert-pin decision logic; useful for testing custom transport wrappers |
+| `evaluatePinDecision` | `function` | Pure unit-testable cert-pin decision logic; useful for testing custom transport wrappers — see "Custom transport wrappers" below |
+
+### `TpuClient.ready` and `TpuClient.close` semantics
+
+**`ready: Promise<void>`** — Resolves when the slot tracker is primed and the first leader snapshot has been loaded. May resolve with an empty snapshot after a 5 s internal deadline if the leader cache could not populate; in that case `sendRawTransaction` throws `{kind:'no-leaders'}` until a subsequent refresh succeeds.
+
+**`close(opts?: { timeoutMs?: number }): Promise<void>`** — Drains in-flight sends up to `timeoutMs` (default 5000 ms), then aborts internal signal and disposes resources. Idempotent; second call is a no-op.
+
+### Custom transport wrappers
+
+If you are hand-rolling a custom QUIC transport (e.g. for testing), `evaluatePinDecision` lets you reuse the cert-pin logic without a live handshake:
+
+```ts
+import { evaluatePinDecision } from 'tpu-client';
+
+// gossipSpki: the 32-byte Ed25519 pubkey bytes from getClusterNodes
+// peerSpki:   the SPKI bytes extracted from the peer's X.509 cert DER
+// pinMode:    'strict' | 'observe' | 'off'
+const decision = evaluatePinDecision({
+  gossipSpki: myGossipPubkeyBytes,
+  peerSpki: extractedCertSpki,
+  pinMode: 'strict',
+});
+
+// decision: { action: 'accept' | 'reject' | 'observe'; mismatch: boolean }
+if (decision.action === 'reject') {
+  throw new Error(`cert pin mismatch for ${leaderIdentity}`);
+}
+if (decision.mismatch) {
+  onEvent({ type: 'cert-pin-mismatch', identity: leaderIdentity, ... });
+}
+```
 
 ---
 
@@ -316,6 +352,23 @@ npm run test:integration
 ```
 
 **Expected runtime:** ~30–60 s against a local validator; up to 3 min against devnet depending on congestion.
+
+---
+
+## Deployment checklist
+
+- Node ≥ 22.11 (ESM-only; no CommonJS support).
+- `ulimit -n 4096` — pool cap × stream slots needs ample file descriptors.
+- `UV_THREADPOOL_SIZE=16` — recommended for `@peculiar/x509` crypto ops under load.
+- Stage a staked identity keypair; never ship an ephemeral identity in production.
+- Consume `onEvent` into structured logs or a metrics sink — don't leave it unwired in production.
+- CF Workers won't work (native QUIC binding); Lambda needs the prebuilt `.node` file bundled or in a Lambda Layer.
+
+---
+
+## Performance characteristics
+
+No benchmarks have been captured yet. Architectural targets: up to 5k `sendRawTransaction` calls/s per client instance on commodity hardware with Node 22, subject to RPC refresh latency and leader QoS class. Real numbers will ship with the first stable release.
 
 ---
 

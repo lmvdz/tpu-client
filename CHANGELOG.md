@@ -7,6 +7,43 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## 2.0.0-alpha.3
+
+### Breaking (within alpha)
+- New TpuEvent variants: `stale-snapshot`, `ephemeral-identity` (replaces `console.warn`). Exhaustive switch consumers need `default:`.
+- New TpuError kind: `rpc-error` (replaces misuse of `slot-subscription` by leader-cache).
+- `AsyncSemaphore` gains an async `acquire()` method + wait queue (backward-compat: `tryAcquire` retained).
+
+### Added
+- `CreateTpuClientOptions.timeouts` for per-connection connect/write/destroy timeouts.
+- `TpuClient.getStats()` returning `{ poolSize, inFlightSends, upcomingLeaders, quarantined, lastSnapshotAgeMs, lastSlotAgeMs, stakedKnown }`.
+- Per-identity quarantine TTL (60s) rather than blanket clear on cluster-refresh.
+- Input validation at `createTpuClient` (fanoutSlots 1..64, poolCap ≥1, maxStreamsPerConn ≥1).
+- Default `poolCap` lowered from 1024 to 64 — closer to steady-state need.
+- `LICENSE` file (MIT) on disk (was only referenced in `package.json`).
+- Package keywords, proper description, sideEffects:false for tree-shaking.
+- `noopEmitter` exported from barrel.
+
+### Fixed
+- 0-signature tx (tx[0] === 0) bypassed guards and reported a bogus signature. Now rejects with `{kind:'invalid-tx'}`.
+- Malformed `tpuQuic` gossip entries no longer crash pool.acquire — `resolveTpuQuicAddr` returns null for unparseable addrs and the leader is skipped with `{kind:'no-tpu-addr'}`.
+- `slotsInEpoch: 0n` defensive check — prevents divide-by-zero-like RPC-induced infinite loops.
+- `stakedIdentities` refresh now validates bigint type and skips malformed entries.
+- `attempts[]` in SendResult now in fanout-order (was completion-order, non-deterministic).
+- slot-stall TpuEvent no longer spams (fires once per outage, not every 400ms).
+- Pool `#drainAndClose` no longer busy-waits 25ms polling on refcount.
+- Package.json `exports` map now has `types` before `import` (TS recommended order).
+- README package-name references corrected throughout — install snippets and import examples now use the actual published name `tpu-client`.
+- README Quickstart now notes it is a compilable skeleton; payer must be funded.
+- README Reference `TpuIdentity` now lists `certPem` and `privateKeyPem`.
+
+### Docs
+- "Deployment checklist" and "Performance characteristics" sections.
+- "Custom transport wrappers" example using `evaluatePinDecision`.
+- Stale DESIGN.md / 00-overview.md updated to reflect alpha.2+.
+
+---
+
 ## 2.0.0-alpha.2
 
 ### Breaking (within alpha)

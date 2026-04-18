@@ -167,4 +167,50 @@ describe('AsyncSemaphore', () => {
     sem.release();
     expect(sem.tryAcquire()).toBe(true);
   });
+
+  it('F10: acquire() resolves when release() is called later', async () => {
+    const sem = new AsyncSemaphore(1);
+    expect(sem.tryAcquire()).toBe(true); // drain it
+
+    let resolved = false;
+    const p = sem.acquire().then(() => { resolved = true; });
+
+    expect(resolved).toBe(false);
+    expect(sem.waiting).toBe(1);
+
+    sem.release(); // should dequeue and resolve
+    await p;
+    expect(resolved).toBe(true);
+    expect(sem.waiting).toBe(0);
+  });
+
+  it('F10: acquire() rejects when queue is full', async () => {
+    // maxWaiters = 1 (override via constructor)
+    const sem = new AsyncSemaphore(1, 1);
+    sem.tryAcquire(); // drain
+
+    // First waiter — fills the queue.
+    const p1 = sem.acquire();
+    expect(sem.waiting).toBe(1);
+
+    // Second waiter — queue full → immediate reject.
+    await expect(sem.acquire()).rejects.toThrow('semaphore queue full');
+
+    // Clean up.
+    sem.release();
+    await p1;
+  });
+
+  it('F10: acquire(signal) rejects on abort', async () => {
+    const sem = new AsyncSemaphore(1);
+    sem.tryAcquire(); // drain
+
+    const ac = new AbortController();
+    const p = sem.acquire(ac.signal);
+    expect(sem.waiting).toBe(1);
+
+    ac.abort();
+    await expect(p).rejects.toThrow('aborted');
+    expect(sem.waiting).toBe(0);
+  });
 });

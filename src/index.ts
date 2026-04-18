@@ -3,6 +3,7 @@ export type {
   TpuClient,
   CreateTpuClientOptions,
   SendResult,
+  TpuClientStats,
 } from './tpu-client.js';
 export type { PinMode } from './quic-sender.js';
 export { evaluatePinDecision } from './quic-sender.js';
@@ -16,7 +17,7 @@ export type {
 
 export type { TpuEvent, LeaderAttempt, EventEmitter } from './events.js';
 export { TpuSendError } from './errors.js';
-export type { TpuError, TpuLeaderError, TpuSendFailure } from './errors.js';
+export type { TpuError, TpuLeaderError, TpuSendFailure, TpuRpcError } from './errors.js';
 
 export type { LeaderDiscoveryProvider } from './leader-cache.js';
 export type { LeaderInfo } from './route-snapshot.js';

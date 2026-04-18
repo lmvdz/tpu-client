@@ -24,13 +24,21 @@ export type TpuSendFailure =
   | { kind: 'invalid-tx'; reason: string };
 
 // ---------------------------------------------------------------------------
+// F8: rpc-error kind for background refresh loop errors.
+// slot-subscription is reserved for actual slot-tracker subscription errors.
+// ---------------------------------------------------------------------------
+
+export type TpuRpcError =
+  | { kind: 'rpc-error'; source: 'leader-cache' | 'stake-refresh' | 'cluster-refresh' | 'epoch-info'; cause: string };
+
+// ---------------------------------------------------------------------------
 // Backward-compat union — callers who catch TpuSendError and match .kind still work.
-// slot-subscription is emitted by background refresh loops via TpuEvent{type:'error'}.
 // ---------------------------------------------------------------------------
 
 export type TpuError =
   | TpuLeaderError
   | TpuSendFailure
+  | TpuRpcError
   | { kind: 'slot-subscription'; cause: string };
 
 export class TpuSendError extends Error {

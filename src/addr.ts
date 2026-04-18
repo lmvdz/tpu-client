@@ -16,6 +16,15 @@ export function parseHostPort(input: string): HostPort {
   return { host, port };
 }
 
+/** F2: Non-throwing variant — returns null on invalid input. */
+export function tryParseHostPort(input: string): HostPort | null {
+  try {
+    return parseHostPort(input);
+  } catch {
+    return null;
+  }
+}
+
 export function formatHostPort(hp: HostPort): string {
   return hp.host.includes(':') ? `[${hp.host}]:${hp.port}` : `${hp.host}:${hp.port}`;
 }
@@ -26,12 +35,21 @@ export function tpuQuicFromTpu(tpu: string): string {
   return formatHostPort({ host, port: port + 6 });
 }
 
-/** Resolve best TPU-QUIC address from a gossip ContactInfo shape. */
+/** Resolve best TPU-QUIC address from a gossip ContactInfo shape.
+ *  Returns null if neither field is present OR if the resolved addr is unparseable. */
 export function resolveTpuQuicAddr(contact: {
   tpuQuic?: string | null;
   tpu?: string | null;
 }): string | null {
-  if (contact.tpuQuic) return contact.tpuQuic;
-  if (contact.tpu) return tpuQuicFromTpu(contact.tpu);
+  if (contact.tpuQuic) {
+    // F2: validate that the tpuQuic addr is parseable before returning it.
+    if (tryParseHostPort(contact.tpuQuic) === null) return null;
+    return contact.tpuQuic;
+  }
+  if (contact.tpu) {
+    // tpuQuicFromTpu uses parseHostPort internally; catch via tryParseHostPort first.
+    if (tryParseHostPort(contact.tpu) === null) return null;
+    return tpuQuicFromTpu(contact.tpu);
+  }
   return null;
 }

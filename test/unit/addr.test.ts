@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseHostPort,
+  tryParseHostPort,
   tpuQuicFromTpu,
   resolveTpuQuicAddr,
 } from '../../src/addr.js';
@@ -38,6 +39,28 @@ describe('parseHostPort', () => {
   });
 });
 
+describe('tryParseHostPort', () => {
+  it('returns null for invalid input (no port)', () => {
+    expect(tryParseHostPort('not-valid')).toBeNull();
+  });
+
+  it('returns null for empty string', () => {
+    expect(tryParseHostPort('')).toBeNull();
+  });
+
+  it('returns null for port 0', () => {
+    expect(tryParseHostPort('1.2.3.4:0')).toBeNull();
+  });
+
+  it('returns valid HostPort for 1.2.3.4:8009', () => {
+    expect(tryParseHostPort('1.2.3.4:8009')).toEqual({ host: '1.2.3.4', port: 8009 });
+  });
+
+  it('returns valid HostPort for IPv6', () => {
+    expect(tryParseHostPort('[::1]:8009')).toEqual({ host: '::1', port: 8009 });
+  });
+});
+
 describe('tpuQuicFromTpu', () => {
   it('adds 6 to the port', () => {
     expect(tpuQuicFromTpu('1.2.3.4:8003')).toBe('1.2.3.4:8009');
@@ -45,12 +68,20 @@ describe('tpuQuicFromTpu', () => {
 });
 
 describe('resolveTpuQuicAddr', () => {
-  it('returns tpuQuic if present', () => {
-    expect(resolveTpuQuicAddr({ tpuQuic: 'x', tpu: 'y' })).toBe('x');
+  it('returns tpuQuic if present and parseable', () => {
+    expect(resolveTpuQuicAddr({ tpuQuic: '1.2.3.4:8009', tpu: '1.2.3.4:8003' })).toBe('1.2.3.4:8009');
+  });
+
+  it('returns null if tpuQuic is unparseable', () => {
+    expect(resolveTpuQuicAddr({ tpuQuic: 'not-valid', tpu: '1.2.3.4:8003' })).toBeNull();
   });
 
   it('derives from tpu if no tpuQuic', () => {
     expect(resolveTpuQuicAddr({ tpu: '1.2.3.4:8003' })).toBe('1.2.3.4:8009');
+  });
+
+  it('returns null if tpu is unparseable', () => {
+    expect(resolveTpuQuicAddr({ tpu: 'bad-addr' })).toBeNull();
   });
 
   it('returns null if neither present', () => {

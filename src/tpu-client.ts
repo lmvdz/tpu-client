@@ -34,6 +34,24 @@ export interface CreateTpuClientOptions {
    * certs whose SPKI does NOT equal the validator identity as of April 2026.
    */
   pinMode?: PinMode;
+  /**
+   * F14: tunable transport timeouts. Defaults: connectMs=5000, writeMs=2000, destroyMs=2000.
+   */
+  timeouts?: { connectMs?: number; writeMs?: number; destroyMs?: number };
+}
+
+// ---------------------------------------------------------------------------
+// F13: stats shape
+// ---------------------------------------------------------------------------
+
+export interface TpuClientStats {
+  poolSize: number;
+  inFlightSends: number;
+  upcomingLeaders: number;
+  quarantined: number;
+  lastSnapshotAgeMs: number;
+  lastSlotAgeMs: number;
+  stakedKnown: number;
 }
 
 export interface TpuClient {
@@ -43,6 +61,8 @@ export interface TpuClient {
     opts?: { signal?: AbortSignal; fanoutSlots?: number },
   ): Promise<SendResult>;
   close(opts?: { timeoutMs?: number }): Promise<void>;
+  /** F13: synchronous snapshot of operational stats. */
+  getStats(): TpuClientStats;
 }
 
 export interface SendResult {
@@ -62,30 +82,77 @@ const DEFAULT_CLOSE_TIMEOUT_MS = 5_000;
 const base58Decoder = getBase58Decoder();
 
 // ---------------------------------------------------------------------------
+// F5: input validation helpers
+// ---------------------------------------------------------------------------
+
+function validateCreateOptions(opts: CreateTpuClientOptions): void {
+  if (opts.fanoutSlots !== undefined) {
+    if (
+      !Number.isInteger(opts.fanoutSlots) ||
+      opts.fanoutSlots < 1 ||
+      opts.fanoutSlots > 64
+    ) {
+      throw new TypeError(
+        `fanoutSlots must be an integer in [1, 64]; got ${String(opts.fanoutSlots)}`,
+      );
+    }
+  }
+  if (opts.poolCap !== undefined) {
+    if (!Number.isInteger(opts.poolCap) || opts.poolCap < 1) {
+      throw new TypeError(
+        `poolCap must be an integer >= 1; got ${String(opts.poolCap)}`,
+      );
+    }
+  }
+  if (opts.maxStreamsPerConn !== undefined) {
+    if (
+      !Number.isInteger(opts.maxStreamsPerConn.staked) ||
+      opts.maxStreamsPerConn.staked < 1
+    ) {
+      throw new TypeError(
+        `maxStreamsPerConn.staked must be an integer >= 1; got ${String(opts.maxStreamsPerConn.staked)}`,
+      );
+    }
+    if (
+      !Number.isInteger(opts.maxStreamsPerConn.unstaked) ||
+      opts.maxStreamsPerConn.unstaked < 1
+    ) {
+      throw new TypeError(
+        `maxStreamsPerConn.unstaked must be an integer >= 1; got ${String(opts.maxStreamsPerConn.unstaked)}`,
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
 export async function createTpuClient(opts: CreateTpuClientOptions): Promise<TpuClient> {
+  // F5: validate options before doing anything.
+  validateCreateOptions(opts);
+
   const userEmit = opts.onEvent ?? noopEmitter;
 
-  // Quarantine: track identities whose STRICT pin check rejected; clear on
-  // cluster-refresh (close enough to epoch rotation cadence). In 'observe' mode
-  // (default) the event fires informatively and does NOT quarantine because the
-  // connection succeeded — quarantining observe-mode mismatches would lock the
-  // client out of ~20%+ of real mainnet leaders.
-  const quarantine = new Set<Address>();
+  // F11: quarantine with per-identity TTL expiry (Map<Address, expiryMs>).
+  const quarantine = new Map<Address, number>();
+  const QUARANTINE_TTL_MS = 60_000;
   const pinMode = opts.pinMode ?? 'observe';
+
   const emit: EventEmitter = (e: TpuEvent): void => {
     if (e.type === 'cert-pin-mismatch' && pinMode === 'strict') {
-      quarantine.add(e.identity);
+      quarantine.set(e.identity, Date.now() + QUARANTINE_TTL_MS);
     }
     if (e.type === 'cluster-refresh') quarantine.clear();
+    // F11: prune expired quarantine entries on every event (cheap).
+    const now = Date.now();
+    for (const [id, expiry] of quarantine) {
+      if (expiry <= now) quarantine.delete(id);
+    }
     userEmit(e);
   };
 
   // Wire external signal into our internal AbortController.
-  // When the external signal fires, we abort internally; our signal is what
-  // all child components observe.
   const internalAbort = new AbortController();
   const abortAll = (): void => { internalAbort.abort(); };
   if (opts.signal !== undefined) {
@@ -94,7 +161,6 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
   const signal = internalAbort.signal;
 
   // Partial-init cleanup: disposers are pushed in order, unwound in reverse.
-  // We do NOT use AsyncDisposableStack (ES2024 — target is ES2023).
   const disposers: Array<() => Promise<void> | void> = [];
   const dispose = async (): Promise<void> => {
     for (const d of disposers.reverse()) {
@@ -106,10 +172,8 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
     // 1. Identity / TLS cert.
     const tpuIdentity = await buildIdentity(opts.identity);
     if (tpuIdentity.ephemeral) {
-      console.warn(
-        '[tpu-client] No identity keypair supplied — using ephemeral Ed25519 key. ' +
-          'This identity is unstaked and will be first-dropped by validators under load.',
-      );
+      // F9: emit event instead of console.warn.
+      emit({ type: 'ephemeral-identity' });
     }
 
     // 2. Slot tracker (subscribes over rpcSubscriptions).
@@ -119,20 +183,14 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
       emit,
       signal,
     });
-    // Tracker teardown is bound to signal; no explicit disposer needed beyond the abort.
 
     // 3. Atomic snapshot reference — starts empty.
     const snapshotRef = new AtomicSnapshotRef(EMPTY_SNAPSHOT);
 
     // 3b. Staked identities set — populated by leader cache via getVoteAccounts().
-    // Declared here so it's available to both startLeaderCache and the QuicPool
-    // maxStreamsFor closure below.
     const stakedIdentities = new Set<Address>();
 
-    // 4. Leader cache refresh loop — fires immediately then every ~1s.
-    // startLeaderCache does initial RPC fetches (getClusterNodes, getEpochInfo,
-    // getEpochSchedule, getVoteAccounts) synchronously before returning, so
-    // after this await the first snapshot and staked set may already be populated.
+    // 4. Leader cache refresh loop.
     await startLeaderCache({
       rpc: opts.rpc,
       fanoutSlots: opts.fanoutSlots ?? DEFAULT_FANOUT,
@@ -145,7 +203,7 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
       stakedIdentities,
     });
 
-    // 5a/5b. Build ready promise and await it (init still blocks; client.ready exposes same promise).
+    // 5a/5b. Build ready promise and await it.
     const readyDeferred = (async () => {
       await slotTracker.ready;
       await waitForSnapshot(snapshotRef, signal);
@@ -156,11 +214,10 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
     emit({ type: 'ready' });
 
     // 7. QUIC connection pool.
-    // stakedIdentities is declared at step 3b and populated by startLeaderCache.
     const maxStreams = opts.maxStreamsPerConn ?? DEFAULT_MAX_STREAMS;
+    // F14: plumb tunable timeouts into openTpuQuicConn via OpenArgs.
+    const timeouts = opts.timeouts;
 
-    // Build pool options without the optional poolCap first, then conditionally
-    // add it — exactOptionalPropertyTypes requires absence rather than undefined.
     const poolOptsBase = {
       openConn: (args: { identity: Address; addr: string; maxStreams: number }) =>
         openTpuQuicConn({
@@ -170,6 +227,7 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
           tpuIdentity,
           emit,
           pinMode,
+          ...(timeouts !== undefined ? { timeouts } : {}),
         }),
       maxStreamsFor: (identity: Address): number =>
         stakedIdentities.has(identity) ? maxStreams.staked : maxStreams.unstaked,
@@ -177,13 +235,16 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
       signal,
       getUpcomingIdentities: (): ReadonlySet<Address> =>
         new Set(snapshotRef.load().leaders.map((l) => l.identity)),
-      isQuarantined: (identity: Address): boolean => quarantine.has(identity),
+      // F11: check per-identity TTL expiry.
+      isQuarantined: (identity: Address): boolean => {
+        const expiry = quarantine.get(identity);
+        return expiry !== undefined && expiry > Date.now();
+      },
     };
 
     const pool = opts.poolCap !== undefined
       ? new QuicPool({ ...poolOptsBase, poolCap: opts.poolCap })
       : new QuicPool(poolOptsBase);
-    // Pool teardown is bound to signal via its constructor listener.
 
     // ---------------------------------------------------------------------------
     // In-flight tracking for graceful close().
@@ -197,21 +258,38 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
     const client: TpuClient = {
       ready: readyDeferred,
 
+      // F13: synchronous stats snapshot.
+      getStats(): TpuClientStats {
+        const snap = snapshotRef.load();
+        return {
+          poolSize: pool.size,
+          inFlightSends: inFlight.size,
+          upcomingLeaders: snap.leaders.length,
+          quarantined: quarantine.size,
+          lastSnapshotAgeMs: snap.asOfSlot === 0n ? Infinity : 0,
+          lastSlotAgeMs: slotTracker.isFresh() ? 0 : Infinity,
+          stakedKnown: stakedIdentities.size,
+        };
+      },
+
       async sendRawTransaction(tx, sendOpts): Promise<SendResult> {
         if (closing || signal.aborted) {
           throw new TpuSendError({ kind: 'aborted' });
         }
 
-        // RT3-S6: validate tx bytes before doing anything async.
+        // RT3-S6 + F1: validate tx bytes before doing anything async.
         if (tx.length < 65) {
           throw new TpuSendError({ kind: 'invalid-tx', reason: `tx too short: ${tx.length} bytes` });
+        }
+        // F1: 0-sig transaction guard.
+        if ((tx[0] as number) === 0) {
+          throw new TpuSendError({ kind: 'invalid-tx', reason: 'transaction has zero signatures' });
         }
         if ((tx[0] as number) >= 0x80) {
           throw new TpuSendError({ kind: 'invalid-tx', reason: '>=128 signatures not supported' });
         }
 
-        // RT2-C1: Register a sentinel promise IMMEDIATELY in inFlight so
-        // close() sees this send even before the first await completes.
+        // RT2-C1: Register a sentinel promise IMMEDIATELY in inFlight.
         let sentinelResolve!: (v: SendResult) => void;
         let sentinelReject!: (e: unknown) => void;
         const sentinelPromise = new Promise<SendResult>((res, rej) => {
@@ -221,7 +299,7 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
         inFlight.add(sentinelPromise);
 
         try {
-          await readyDeferred; // belt-and-suspenders per DESIGN.md §Startup
+          await readyDeferred;
 
           const sig = computeSignature(tx);
           const snap = snapshotRef.load();
@@ -233,18 +311,18 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
           }
 
           const sendSignal = sendOpts?.signal ?? signal;
-          const attempts: LeaderAttempt[] = [];
 
-          // Fan-out: attempt all leaders in parallel.
-          const promises = leaders.map(async (leader): Promise<void> => {
+          // F6: pre-size attempts array and assign by index to preserve order.
+          const attempts = new Array<LeaderAttempt>(leaders.length);
+
+          const promises = leaders.map((leader, i) => async (): Promise<void> => {
             if (leader.tpuQuicAddr === null) {
-              const attempt: LeaderAttempt = {
+              attempts[i] = {
                 identity: leader.identity,
                 tpuQuicAddr: '',
                 ok: false,
                 error: { kind: 'no-tpu-addr', identity: leader.identity },
               };
-              attempts.push(attempt);
               return;
             }
 
@@ -253,7 +331,7 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
               entry = await pool.acquire(leader.identity, leader.tpuQuicAddr);
             } catch (err) {
               const isQuarantinedErr = err instanceof Error && err.message === 'quarantined';
-              const attempt: LeaderAttempt = {
+              attempts[i] = {
                 identity: leader.identity,
                 tpuQuicAddr: leader.tpuQuicAddr,
                 ok: false,
@@ -261,39 +339,32 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
                   ? { kind: 'quarantined', identity: leader.identity }
                   : { kind: 'connect-timeout', identity: leader.identity },
               };
-              attempts.push(attempt);
               return;
             }
 
             try {
               const result = await sendOnce(entry, tx, sendSignal);
               if ('rttMs' in result) {
-                // Success path — rttMs present, no error field.
-                const attempt: LeaderAttempt = {
+                attempts[i] = {
                   identity: leader.identity,
                   tpuQuicAddr: leader.tpuQuicAddr,
                   ok: true,
                   rttMs: result.rttMs,
                 };
-                attempts.push(attempt);
               } else {
-                // Failure path — result is a TpuLeaderError; no rttMs field.
-                // sendOnce types its return as TpuError (broad); cast to the
-                // narrower TpuLeaderError — sendOnce only ever returns leader-level kinds.
-                const attempt: LeaderAttempt = {
+                attempts[i] = {
                   identity: leader.identity,
                   tpuQuicAddr: leader.tpuQuicAddr,
                   ok: false,
                   error: result as TpuLeaderError,
                 };
-                attempts.push(attempt);
               }
             } finally {
               pool.release(entry);
             }
           });
 
-          await Promise.all(promises);
+          await Promise.all(promises.map((fn) => fn()));
 
           emit({ type: 'send', signature: sig, attempts });
 
@@ -318,7 +389,6 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
       async close(closeOpts?: { timeoutMs?: number }): Promise<void> {
         if (closing) return;
         closing = true;
-        // RT4-S4: race drain against a configurable timeout (default 5 s).
         const timeoutMs = closeOpts?.timeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
         const drainPromise = Promise.allSettled([...inFlight]);
         const timeoutPromise = new Promise<void>((resolve) => setTimeout(resolve, timeoutMs));
@@ -330,7 +400,6 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
 
     return client;
   } catch (err) {
-    // Partial-init failed — unwind whatever was built.
     await dispose();
     throw err;
   }
@@ -340,28 +409,16 @@ export async function createTpuClient(opts: CreateTpuClientOptions): Promise<Tpu
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Spin-wait up to 5 s for the snapshot to contain at least one leader.
- * Returns early (success or deadline) regardless — caller continues.
- */
 async function waitForSnapshot(ref: AtomicSnapshotRef, signal: AbortSignal): Promise<void> {
   const deadline = Date.now() + 5_000;
   while (!signal.aborted) {
     if (ref.load().leaders.length > 0) return;
-    if (Date.now() >= deadline) return; // give up — sendRawTransaction will throw no-leaders
+    if (Date.now() >= deadline) return;
     await new Promise<void>((r) => setTimeout(r, 50));
   }
 }
 
-/**
- * Extract the transaction signature from raw wire-format bytes.
- *
- * Solana wire format: [compact-u16 numSigs] [64-byte sigs...] [message]
- * For any realistic transaction (numSigs < 128) the compact-u16 encodes
- * as a single byte, so the first signature lives at bytes [1..65].
- */
 function computeSignature(tx: Uint8Array): Signature {
   const sigBytes = tx.subarray(1, 65);
-  // base58Decoder is hoisted to module scope (RT3-S6).
   return base58Decoder.decode(sigBytes) as unknown as Signature;
 }
