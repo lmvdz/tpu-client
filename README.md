@@ -161,7 +161,21 @@ const identity = await ed25519KeyPairFromSolanaSecret(raw);
 
 If you omit `identity`, an ephemeral (unstaked) keypair is generated and an `ephemeral-identity` `TpuEvent` fires. Ephemeral identities are fine for development but will be first-dropped by validators under production load.
 
-> **QUIC-layer fix (2.0.0-alpha.6+):** `@matrixai/quic@2.0.9` has a stream-creation bug that blocks sends against peers that advertise `initial_max_streams_uni: 0` and grant credit via `MAX_STREAMS` frames post-handshake — Agave's unstaked-QoS path (~80% of mainnet leaders). **This release depends on a patched fork** at `github:lmvdz/js-quic#release/tpu-fix` (pulled automatically when you `npm install solana-tpu-client` — no extra steps, no patch files to copy). The fork is `@matrixai/quic@2.0.9` with a ~12-line diff to `dist/QUICStream.js`; native binaries still resolve from upstream's npm packages. Upstream PR: https://github.com/MatrixAI/js-quic/pull/157 — when that merges + releases, we switch back to the canonical package.
+> **QUIC-layer fix — one-line addition recommended in your app's `package.json`:**
+>
+> `@matrixai/quic@2.0.9` has a stream-creation bug that blocks sends against peers that advertise `initial_max_streams_uni: 0` and grant credit via `MAX_STREAMS` frames post-handshake — Agave's unstaked-QoS path (~80% of mainnet leaders).
+>
+> This release depends on a patched fork at `github:lmvdz/js-quic#release/tpu-fix` via its direct `dependencies` entry, which gets installed automatically when you `npm install solana-tpu-client`. **For belt-and-suspenders correctness** — in case another package in your tree also depends on `@matrixai/quic` and npm hoists the registry version — add this to your app's root `package.json`:
+>
+> ```json
+> {
+>   "overrides": {
+>     "@matrixai/quic": "github:lmvdz/js-quic#release/tpu-fix"
+>   }
+> }
+> ```
+>
+> This forces every resolution (transitive and direct) to the patched fork. The fork is `@matrixai/quic@2.0.9` with a ~12-line diff to `dist/QUICStream.js`; native binaries still come from upstream's npm packages unchanged. Upstream PR: https://github.com/MatrixAI/js-quic/pull/157 — when that merges + releases, we drop the fork and the `overrides` line becomes unnecessary.
 
 > **Firedancer note:** Firedancer (and its hybrid Frankendancer variant) enforce ALPN — connections without `solana-tpu` are rejected. This library sets ALPN automatically. Firedancer has been handling approximately 20% of leader slots on mainnet.
 
