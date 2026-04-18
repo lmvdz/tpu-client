@@ -1,10 +1,11 @@
 /**
- * Unit tests for tpu-client input validation (F1, F5).
+ * Unit tests for tpu-client input validation (F1, F5) and alpha.3 additions (F9, F13).
  * These tests do NOT reach the QUIC layer — validation fires before any async work.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createTpuClient } from '../../src/tpu-client.js';
 import { TpuSendError } from '../../src/errors.js';
+import type { TpuEvent } from '../../src/events.js';
 import type { Address } from '@solana/kit';
 
 // ---------------------------------------------------------------------------
@@ -210,5 +211,74 @@ describe('createTpuClient option validation', () => {
         maxStreamsPerConn: { staked: -1, unstaked: 8 },
       })),
     ).rejects.toThrow(TypeError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A1: ephemeral-identity event (F9)
+// ---------------------------------------------------------------------------
+
+describe('ephemeral-identity event', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('emits ephemeral-identity before ready resolves when no identity supplied', async () => {
+    const ac = new AbortController();
+    const events: TpuEvent[] = [];
+    const { fakeRpc, fakeSubs } = makeStubDeps();
+
+    const client = await createTpuClient({
+      rpc: fakeRpc as any,
+      rpcSubscriptions: fakeSubs as any,
+      signal: ac.signal,
+      onEvent: (e) => events.push(e),
+    });
+
+    try {
+      // ready resolves as part of createTpuClient; ephemeral-identity fires during init
+      // before ready resolves, so it must already be in the array at this point.
+      const ephemeral = events.filter((e) => e.type === 'ephemeral-identity');
+      expect(ephemeral.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      ac.abort();
+      await client.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A2: getStats shape (F13)
+// ---------------------------------------------------------------------------
+
+describe('getStats', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('returns an object with all 7 numeric fields', async () => {
+    const ac = new AbortController();
+    const { fakeRpc, fakeSubs } = makeStubDeps();
+
+    const client = await createTpuClient({
+      rpc: fakeRpc as any,
+      rpcSubscriptions: fakeSubs as any,
+      signal: ac.signal,
+    });
+
+    try {
+      const stats = client.getStats();
+      const fields = [
+        'poolSize',
+        'inFlightSends',
+        'upcomingLeaders',
+        'quarantined',
+        'lastSnapshotAgeMs',
+        'lastSlotAgeMs',
+        'stakedKnown',
+      ] as const;
+      for (const field of fields) {
+        expect(typeof stats[field], `stats.${field} should be a number`).toBe('number');
+      }
+    } finally {
+      ac.abort();
+      await client.close();
+    }
   });
 });

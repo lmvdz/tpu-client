@@ -153,8 +153,18 @@ export async function openTpuQuicConn(args: OpenArgs): Promise<QuicConnection> {
         // @matrixai/quic expects PEM (string | Uint8Array containing PEM text).
         cert: certPem,
         key: keyPem,
-        // Agave default for TPU QUIC connections.
-        initialMaxStreamsUni: args.maxStreams,
+        // `initialMaxStreamsUni` is OUR advertisement to the peer — "how many
+        // unidirectional streams the peer can open TO US". TPU servers don't
+        // initiate uni streams to clients, so this value is essentially unused
+        // on the wire. Set it generously; it has no bearing on how many uni
+        // streams WE can open outbound (that's governed by the peer's
+        // transport params + our pool-level AsyncSemaphore).
+        initialMaxStreamsUni: 1024,
+        // Per-stream receive-data budget (peer→us). Generous default to avoid
+        // prematurely flow-control-blocking any late peer responses.
+        initialMaxStreamDataUni: 1 << 20, // 1 MiB
+        // Overall connection receive-data budget.
+        initialMaxData: 1 << 24, // 16 MiB
         maxIdleTimeout: 30_000,
       },
     }),

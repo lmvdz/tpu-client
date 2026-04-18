@@ -7,6 +7,25 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## 2.0.0-alpha.4
+
+### Known issues
+- **Agave TPU-QUIC unstaked send path is blocked by upstream `@matrixai/quic` bug.** Agave advertises `initial_max_streams_uni: 0` for unstaked clients and issues `MAX_STREAMS` frames post-handshake. `@matrixai/quic@2.0.9` eager-primes every new stream via a zero-length `streamSend`, which fails with `StreamLimit` against Agave and corrupts internal stream-ID state on retry. **Send works against Frankendancer (~20% of mainnet leader slots) but fails against Agave (~80%) unless the client is staked.** The permanent fix is either (a) upstream patch to `@matrixai/quic` that retries `streamSend` on `StreamLimit` after waiting for `MAX_STREAMS`, or (b) switching to a different Node QUIC binding (e.g. a `quinn` NAPI wrapper). Tracked, not yet submitted upstream. Workaround for users: run with a staked identity keypair; staked clients get non-zero initial stream credit.
+
+### Added
+- `LICENSE` file (MIT) written to repo root — was only referenced in `package.json`, missing on disk.
+- `@matrixai/logger` declared as peer + dev dependency (was imported in `src/quic-sender.ts` but undeclared — install-time failure for users).
+- `CHANGELOG.md` added to `package.json` `files` so it ships in the tarball.
+- `package.json` gains `keywords` and `sideEffects: false` for npm search + bundler tree-shaking.
+- `package.json` `exports` map: `types` placed before `import` per current TS recommendation.
+- `scripts/devnet-smoke.ts` — runnable E2E prover (`npm run smoke:devnet`) airdropping + self-transferring on devnet; manual tool, not CI.
+- `scripts/firedancer-smoke.ts` now exercises `sendOnce` after handshake, revealing the Agave interop gap above.
+- JSDoc on every public type: `CreateTpuClientOptions`, `TpuClient`, `TpuClientStats`, `SendResult`, `TpuConfirm*`, `LeaderAttempt`, all `TpuEvent` variants, all `TpuError` / `TpuLeaderError` / `TpuSendFailure` / `TpuRpcError` variants, `EventEmitter`, `noopEmitter`.
+- Unit tests for the four alpha.3 additions: `ephemeral-identity`, `stale-snapshot`, `rpc-error`, `getStats()`.
+
+### Fixed
+- All 13 npm audit vulnerabilities (9 moderate, 4 high — all transitive from vitest 2.x) resolved by upgrading to vitest 4.x + `npm audit fix` for the rest. Zero outstanding.
+
 ## 2.0.0-alpha.3
 
 ### Breaking (within alpha)

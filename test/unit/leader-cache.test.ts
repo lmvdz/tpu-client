@@ -236,6 +236,158 @@ describe('startLeaderCache stakedIdentities', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// A3: rpc-error emitted on getSlotLeaders failure (F8)
+// ---------------------------------------------------------------------------
+
+describe('startLeaderCache rpc-error on provider failure', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('emits {type:error, error:{kind:rpc-error, source:leader-cache}} when provider rejects', async () => {
+    vi.useFakeTimers();
+
+    const emittedEvents: TpuEvent[] = [];
+    const emit = (e: TpuEvent) => emittedEvents.push(e);
+
+    const fakeRpc = {
+      getClusterNodes: () => ({ send: async () => [] }),
+      getEpochInfo: () => ({
+        send: async () => ({
+          epoch: 1n,
+          absoluteSlot: 100n,
+          slotIndex: 0n,
+          slotsInEpoch: 100n,
+          blockHeight: 100n,
+          transactionCount: 0n,
+        }),
+      }),
+      getEpochSchedule: () => ({
+        send: async () => ({
+          slotsPerEpoch: 100n,
+          firstNormalSlot: 0n,
+          firstNormalEpoch: 0n,
+          leaderScheduleSlotOffset: 0n,
+          warmup: false,
+        }),
+      }),
+      getVoteAccounts: () => ({
+        send: async () => ({ current: [], delinquent: [] }),
+      }),
+    };
+
+    const failingProvider = {
+      getLeaders: async (): Promise<never> => {
+        throw new Error('RPC connection refused');
+      },
+    };
+
+    const abortController = new AbortController();
+    const snapshotRef = new AtomicSnapshotRef(EMPTY_SNAPSHOT);
+
+    await startLeaderCache({
+      rpc: fakeRpc as any,
+      provider: failingProvider,
+      fanoutSlots: 4,
+      emit,
+      signal: abortController.signal,
+      getCurrentSlot: () => 100n,
+      snapshotRef,
+    });
+
+    // Advance one tick to let the loop run and hit the error
+    await vi.advanceTimersByTimeAsync(1_100);
+
+    const rpcErrors = emittedEvents.filter(
+      (e) =>
+        e.type === 'error' &&
+        e.error.kind === 'rpc-error' &&
+        (e.error as { source: string }).source === 'leader-cache',
+    );
+    expect(rpcErrors.length).toBeGreaterThanOrEqual(1);
+
+    abortController.abort();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A4: stale-snapshot emitted after persistent failures past 2×TICK_MS (F7)
+// ---------------------------------------------------------------------------
+
+describe('startLeaderCache stale-snapshot after persistent failures', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('emits stale-snapshot with numeric lastRefreshAgeMs >= 2000 after ~3s of failures', async () => {
+    vi.useFakeTimers();
+
+    const emittedEvents: TpuEvent[] = [];
+    const emit = (e: TpuEvent) => emittedEvents.push(e);
+
+    const fakeRpc = {
+      getClusterNodes: () => ({ send: async () => [] }),
+      getEpochInfo: () => ({
+        send: async () => ({
+          epoch: 1n,
+          absoluteSlot: 100n,
+          slotIndex: 0n,
+          slotsInEpoch: 100n,
+          blockHeight: 100n,
+          transactionCount: 0n,
+        }),
+      }),
+      getEpochSchedule: () => ({
+        send: async () => ({
+          slotsPerEpoch: 100n,
+          firstNormalSlot: 0n,
+          firstNormalEpoch: 0n,
+          leaderScheduleSlotOffset: 0n,
+          warmup: false,
+        }),
+      }),
+      getVoteAccounts: () => ({
+        send: async () => ({ current: [], delinquent: [] }),
+      }),
+    };
+
+    const failingProvider = {
+      getLeaders: async (): Promise<never> => {
+        throw new Error('persistent RPC failure');
+      },
+    };
+
+    const abortController = new AbortController();
+    const snapshotRef = new AtomicSnapshotRef(EMPTY_SNAPSHOT);
+
+    await startLeaderCache({
+      rpc: fakeRpc as any,
+      provider: failingProvider,
+      fanoutSlots: 4,
+      emit,
+      signal: abortController.signal,
+      getCurrentSlot: () => 100n,
+      snapshotRef,
+    });
+
+    // Advance 3 ticks (3s) so lastRefreshAgeMs exceeds 2*TICK_MS=2000
+    await vi.advanceTimersByTimeAsync(3_100);
+
+    const staleEvents = emittedEvents.filter(
+      (e): e is Extract<TpuEvent, { type: 'stale-snapshot' }> =>
+        e.type === 'stale-snapshot',
+    );
+    expect(staleEvents.length).toBeGreaterThanOrEqual(1);
+    // The first stale event should have lastRefreshAgeMs >= 2000
+    const first = staleEvents[0]!;
+    expect(typeof first.lastRefreshAgeMs).toBe('number');
+    expect(first.lastRefreshAgeMs).toBeGreaterThanOrEqual(2000);
+
+    abortController.abort();
+  });
+});
+
 describe('startLeaderCache cluster refresh cadence', () => {
   afterEach(() => {
     vi.useRealTimers();
