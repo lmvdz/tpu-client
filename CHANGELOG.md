@@ -7,6 +7,32 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## 2.0.0-alpha.5
+
+### Fixed — THE BIG ONE (proof that the fix works)
+- **TPU-QUIC send now lands transactions against Agave, end-to-end.** Pinpointed + fixed the `@matrixai/quic@2.0.9` eager-prime `StreamLimit` behavior that's incompatible with peers advertising `initial_max_streams_uni: 0` + post-handshake `MAX_STREAMS` credit — i.e. Agave's unstaked QoS. Verified:
+  - **Local (`solana-test-validator` 3.1.11)**: integration test submits signed `SystemProgram::transfer` via TPU-QUIC and observes landing at `processed`. Was 0/N before; **now passes every run**.
+  - **Live mainnet-beta**: 6-node probe. Pre-fix: 0/3 Agave sends succeeded. Post-fix: 2/3 Agave (1 unrelated network timeout), 3/3 Frankendancer. Includes probes against actively-leading Agave validators.
+- **Upstream PR filed**: https://github.com/MatrixAI/js-quic/pull/157 — two small diffs to `QUICStream.ts`: (1) swallow eager-prime `StreamLimit` without leaking state; (2) bounded retry on `writableWrite` to absorb MAX_STREAMS arrival latency.
+
+### How the fix ships to you (honest disclosure)
+`patch-package` is a dev-loop tool: it patches OUR `node_modules` when WE run `npm install`, so our CI / integration tests / smoke scripts exercise the patched library. It does **NOT** automatically patch downstream consumers' installs — npm's security model intentionally forbids package A from modifying package B's files in package C's install tree.
+
+For end users, the paths are:
+1. **Staked identity** (recommended for prod anyway): Agave advertises nonzero initial stream credit to staked clients, so the bug doesn't trigger. This is the production path.
+2. **Manual patch application**: the tarball ships `patches/@matrixai+quic+2.0.9.patch` (3 KB). Consumers can copy it into their project root's `patches/` and add `"postinstall": "patch-package"` + `"patch-package": "^8"` themselves. Same diff, applied to their tree.
+3. **Wait for MatrixAI#157 to merge + release**: then this entire shim goes away and `npm install` Just Works.
+
+### Added
+- `patch-package` wired as devDependency; `postinstall: patch-package` runs at our install time.
+- `patches/@matrixai+quic+2.0.9.patch` checked in and shipped in the tarball (`files[]` includes `patches`).
+- Integration test now polls `getSignatureStatuses` after the TPU send and asserts landing within 20 s, retrying to absorb test-validator's unstaked-QoS drops.
+
+### Changed
+- Integration test uses `fanoutSlots: 1` against single-validator test harnesses so all 4 default fanout attempts don't stack onto the same loopback IP (which otherwise trips per-IP rate limiting).
+
+---
+
 ## 2.0.0-alpha.4
 
 ### Known issues

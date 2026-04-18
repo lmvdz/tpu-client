@@ -1,6 +1,6 @@
 {
   "name": "tpu-client",
-  "version": "2.0.0-alpha.4",
+  "version": "2.0.0-alpha.5",
   "type": "module",
   "description": "TPU-direct Solana transaction submission for @solana/kit apps. QUIC, staked QoS, stake-weighted stream allocation, observability events.",
   "main": "./lib/index.js",
@@ -28,7 +28,8 @@
     "README.md",
     "LICENSE",
     "MIGRATION.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "patches"
   ],
   "engines": {
     "node": ">=22.11"
@@ -77,6 +78,7 @@
     "format": "prettier --write './src/**/*.ts'",
     "typecheck": "tsc --noEmit",
     "smoke:firedancer": "tsx scripts/firedancer-smoke.ts",
-    "smoke:devnet": "DEVNET_SMOKE=1 tsx scripts/devnet-smoke.ts"
+    "smoke:devnet": "DEVNET_SMOKE=1 tsx scripts/devnet-smoke.ts",
+    "postinstall": "patch-package"
   }
 }
