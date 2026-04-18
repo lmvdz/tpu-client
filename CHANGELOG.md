@@ -7,6 +7,34 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## 2.0.0-alpha.6
+
+### Fixed — end-user-clean install
+`npm install tpu-client` now Just Works for unstaked and staked clients alike — no `patch-package` setup, no copied patch files, no manual steps.
+
+### How
+- Depends on a patched fork of `@matrixai/quic` pinned via a GitHub URL:
+  ```
+  "@matrixai/quic": "github:lmvdz/js-quic#release/tpu-fix"
+  ```
+  The branch contains `@matrixai/quic@2.0.9` with `dist/QUICStream.js` already patched to handle `initial_max_streams_uni: 0` peers. Version is renamed to `2.0.9-tpu-fix.0` so `npm ls` makes the fork's identity visible.
+- An npm `overrides` entry forces every transitive resolution of `@matrixai/quic` to the fork too, preventing a downstream dep from pulling the buggy registry version.
+- Native binaries (`@matrixai/quic-linux-x64`, `-darwin-arm64`, `-darwin-x64`, `-darwin-universal`, `-win32-x64`) continue to resolve from the npm registry normally via `optionalDependencies`. No Rust toolchain needed on the consumer side.
+- Upstream PR: https://github.com/MatrixAI/js-quic/pull/157. When it merges + releases, we drop the override and return to the canonical package.
+
+### Removed
+- `patch-package` and `postinstall-postinstall` from devDeps.
+- `postinstall: patch-package` from scripts.
+- `patches/@matrixai+quic+2.0.9.patch` file + `patches` from `files[]`. The fix now lives in the fork's `dist/` directly.
+
+### Verified (clean install from scratch)
+- `rm -rf node_modules package-lock.json && npm install` — resolves `@matrixai/quic` from `git+ssh://git@github.com/lmvdz/js-quic.git#b538c57...`, version `2.0.9-tpu-fix.0`, patch markers present in `dist/QUICStream.js`.
+- 83/83 unit tests pass.
+- Integration test (`TPU_INTEGRATION=1 vitest run test/integration`) passes — transaction lands via TPU-QUIC on `solana-test-validator` at `processed` commitment.
+- `npm audit`: 0 vulnerabilities.
+
+---
+
 ## 2.0.0-alpha.5
 
 ### Fixed — THE BIG ONE (proof that the fix works)
