@@ -1,0 +1,52 @@
+diff --git a/node_modules/@matrixai/quic/dist/QUICStream.js b/node_modules/@matrixai/quic/dist/QUICStream.js
+index a9889fb..f68c492 100644
+--- a/node_modules/@matrixai/quic/dist/QUICStream.js
++++ b/node_modules/@matrixai/quic/dist/QUICStream.js
+@@ -217,12 +217,16 @@ let QUICStream = class QUICStream {
+                 // ignore.
+                 if (utils.isStreamStopped(e) === false) {
+                     if (e.message === 'StreamLimit') {
+-                        const limit = this.type === 'bidi'
+-                            ? config.initialMaxStreamsBidi
+-                            : config.initialMaxStreamsUni;
+-                        throw new errors.ErrorQUICStreamLimit(`Stream limit of ${limit} has been reached`, { cause: e });
++                        // PATCH (tpu-client / MatrixAI#pending): swallow eager-prime
++                        // StreamLimit rather than throwing. Some peers (notably
++                        // Solana's Agave TPU-QUIC) advertise `initial_max_streams_uni: 0`
++                        // and issue MAX_STREAMS frames post-handshake. The eager-prime
++                        // races ahead of any stream-credit frame. Swallowing here lets
++                        // the first real `writableWrite` succeed once credit arrives.
++                    }
++                    else {
++                        throw new errors.ErrorQUICStreamInternal(`Failed to prime local stream state with a 0-length message: ${e.message}`, { cause: e });
+                     }
+-                    throw new errors.ErrorQUICStreamInternal(`Failed to prime local stream state with a 0-length message: ${e.message}`, { cause: e });
+                 }
+             }
+         }
+@@ -498,6 +502,13 @@ let QUICStream = class QUICStream {
+             return;
+         }
+         let sentLength;
++        // PATCH (tpu-client / MatrixAI#pending): retry StreamLimit. Some peers
++        // advertise `initial_max_streams_uni: 0` and grant credit post-handshake
++        // via MAX_STREAMS frames. Bounded retry lets the receive loop process
++        // incoming frames before we fail the write.
++        let streamLimitRetries = 0;
++        const STREAM_LIMIT_MAX_RETRIES = 20;
++        const STREAM_LIMIT_BACKOFF_MS = 50;
+         while (true) {
+             try {
+                 const result = this.connection.conn.streamSend(this.streamId, chunk, false);
+@@ -523,6 +534,11 @@ let QUICStream = class QUICStream {
+                     }));
+                     return;
+                 }
++                else if (e.message === 'StreamLimit' && streamLimitRetries < STREAM_LIMIT_MAX_RETRIES) {
++                    streamLimitRetries++;
++                    await new Promise((resolve) => setTimeout(resolve, STREAM_LIMIT_BACKOFF_MS));
++                    continue;
++                }
+                 else {
+                     const e_ = new errors.ErrorQUICStreamInternal('Local stream writable could not `streamSend`', { cause: e });
+                     this.writableController.error(e_);
