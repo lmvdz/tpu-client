@@ -26,7 +26,8 @@
 
 import { createSolanaRpc } from '@solana/kit';
 import { buildIdentity } from '../src/identity.js';
-import { openTpuQuicConn } from '../src/quic-sender.js';
+import { openTpuQuicConn, sendOnce } from '../src/quic-sender.js';
+import { AsyncSemaphore, type PoolEntry } from '../src/quic-pool.js';
 import type { Address } from '@solana/kit';
 
 // ---------------------------------------------------------------------------
@@ -68,6 +69,7 @@ interface ProbeResult {
   expectedPubkey?: string;
   gotPubkey?: string;
   upcomingSlots?: number;
+  sendRttMs?: number;
 }
 
 async function probe(
@@ -89,8 +91,35 @@ async function probe(
       tpuIdentity,
       emit,
     });
+    // Also exercise sendOnce — a 100-byte dummy that looks like a signed tx
+    // (1 sig count byte, 64 bytes signature, then garbage for message).
+    // The validator will discard at tx-parse, but the QUIC stream write
+    // completing is what we verify here.
+    const fakeTx = new Uint8Array(100);
+    fakeTx[0] = 1;
+    for (let i = 1; i < 65; i++) fakeTx[i] = 0xAA;
+    const entry: PoolEntry = {
+      identity,
+      addr,
+      conn,
+      streamSlots: new AsyncSemaphore(8),
+      refcount: 1,
+      lastUse: Date.now(),
+      state: 'open',
+    };
+    const sendResult = await sendOnce(entry, fakeTx, new AbortController().signal);
     await conn.destroy('smoke-done');
-    return { label, identity: String(identity), addr, version, ok: true };
+    if ('rttMs' in sendResult) {
+      return { label, identity: String(identity), addr, version, ok: true, sendRttMs: sendResult.rttMs };
+    }
+    return {
+      label,
+      identity: String(identity),
+      addr,
+      version,
+      ok: false,
+      reason: `handshake ok, send failed: ${sendResult.kind}${sendResult.kind === 'transport' ? ` (${sendResult.cause})` : ''}`,
+    };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     const pinEvent = events

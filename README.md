@@ -159,7 +159,9 @@ const raw = new Uint8Array(
 const identity = await ed25519KeyPairFromSolanaSecret(raw);
 ```
 
-If you omit `identity`, an ephemeral (unstaked) keypair is generated and a warning is printed. Ephemeral identities are fine for development but will be first-dropped by validators under production load.
+If you omit `identity`, an ephemeral (unstaked) keypair is generated and an `ephemeral-identity` `TpuEvent` fires. Ephemeral identities are fine for development but will be first-dropped by validators under production load.
+
+> **Known interop caveat (April 2026):** Unstaked clients currently **cannot send** to Agave TPU-QUIC endpoints (~80% of mainnet leaders) due to an upstream `@matrixai/quic` bug — Agave advertises 0 initial uni streams and issues `MAX_STREAMS` frames post-handshake, but `@matrixai/quic` eager-primes every new stream and fails with `StreamLimit` before any credit can arrive. **Handshake + cert pinning + ALPN all work correctly; send succeeds against Frankendancer/Firedancer (~20% of leader slots).** Fix path is either an upstream patch to `@matrixai/quic` or switching Node QUIC binding. Staked clients with nonzero initial stream credit are unaffected. See [CHANGELOG.md](./CHANGELOG.md) 2.0.0-alpha.4 for details.
 
 > **Firedancer note:** Firedancer (and its hybrid Frankendancer variant) enforce ALPN — connections without `solana-tpu` are rejected. This library sets ALPN automatically. Firedancer has been handling approximately 20% of leader slots on mainnet.
 
@@ -369,6 +371,15 @@ npm run test:integration
 ## Performance characteristics
 
 No benchmarks have been captured yet. Architectural targets: up to 5k `sendRawTransaction` calls/s per client instance on commodity hardware with Node 22, subject to RPC refresh latency and leader QoS class. Real numbers will ship with the first stable release.
+
+To verify the end-to-end path against devnet (airdrop → self-transfer → confirmed), run:
+
+```bash
+npm run smoke:devnet
+# or: DEVNET_SMOKE=1 npx tsx scripts/devnet-smoke.ts
+```
+
+This takes ~30–60 s and prints the confirmed signature, per-leader attempt results, and a live `getStats()` snapshot. Not run in CI.
 
 ---
 

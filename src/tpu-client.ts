@@ -16,14 +16,25 @@ import type { TpuEvent } from './events.js';
 // Public interfaces
 // ---------------------------------------------------------------------------
 
+/**
+ * Options for {@link createTpuClient}.
+ */
 export interface CreateTpuClientOptions {
+  /** Solana JSON-RPC client (from `createSolanaRpc`). Used for leader discovery and slot info. */
   rpc: Rpc<SolanaRpcApi>;
+  /** Solana WebSocket subscriptions client (from `createSolanaRpcSubscriptions`). Used for slot notifications. */
   rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi>;
+  /** Staked validator identity key pair. Omit to use an ephemeral (unstaked) TLS cert. */
   identity?: CryptoKeyPair;
+  /** Number of upcoming leaders to fan out to per send. Default 4. Range [1, 64]. */
   fanoutSlots?: number;
+  /** Max concurrent QUIC streams per connection, split by staked/unstaked. Default `{staked:128, unstaked:8}`. */
   maxStreamsPerConn?: { staked: number; unstaked: number };
+  /** Maximum number of open QUIC connections in the pool. Default unlimited. */
   poolCap?: number;
+  /** Optional callback to receive observability events. Defaults to a no-op. */
   onEvent?: EventEmitter;
+  /** External AbortSignal to stop the client. Equivalent to calling `close()`. */
   signal?: AbortSignal;
   /**
    * Server cert-pin mode. Default `'observe'` — accept connections but emit a
@@ -35,7 +46,7 @@ export interface CreateTpuClientOptions {
    */
   pinMode?: PinMode;
   /**
-   * F14: tunable transport timeouts. Defaults: connectMs=5000, writeMs=2000, destroyMs=2000.
+   * Tunable transport timeouts (milliseconds). Defaults: connectMs=5000, writeMs=2000, destroyMs=2000.
    */
   timeouts?: { connectMs?: number; writeMs?: number; destroyMs?: number };
 }
@@ -44,29 +55,49 @@ export interface CreateTpuClientOptions {
 // F13: stats shape
 // ---------------------------------------------------------------------------
 
+/** Synchronous operational snapshot returned by {@link TpuClient.getStats}. */
 export interface TpuClientStats {
+  /** Number of open QUIC connections in the pool. */
   poolSize: number;
+  /** Number of `sendRawTransaction` calls currently in flight. */
   inFlightSends: number;
+  /** Number of leaders in the current snapshot window. */
   upcomingLeaders: number;
+  /** Number of validator identities currently in the cert-pin quarantine set. */
   quarantined: number;
+  /** Age of the leader snapshot in milliseconds; `Infinity` if snapshot is empty. */
   lastSnapshotAgeMs: number;
+  /** Age of the most recent slot notification in milliseconds; `Infinity` if stale. */
   lastSlotAgeMs: number;
+  /** Number of staked validator identities known from the last vote-accounts refresh. */
   stakedKnown: number;
 }
 
+/**
+ * A running TPU client. Obtain one via {@link createTpuClient}.
+ */
 export interface TpuClient {
+  /** Resolves when the client has completed init (slot tracker live, first snapshot populated). */
   readonly ready: Promise<void>;
+  /**
+   * Send a raw signed transaction to the upcoming leader fan-out set over QUIC.
+   * Throws {@link TpuSendError} if the tx is invalid or all leader attempts fail.
+   */
   sendRawTransaction(
     tx: Uint8Array,
     opts?: { signal?: AbortSignal; fanoutSlots?: number },
   ): Promise<SendResult>;
+  /** Drain in-flight sends, then shut down all connections and background loops. */
   close(opts?: { timeoutMs?: number }): Promise<void>;
-  /** F13: synchronous snapshot of operational stats. */
+  /** Return a synchronous snapshot of operational stats. */
   getStats(): TpuClientStats;
 }
 
+/** Result returned by a successful {@link TpuClient.sendRawTransaction} call. */
 export interface SendResult {
+  /** Base58-encoded transaction signature extracted from the wire bytes. */
   signature: Signature;
+  /** Per-leader attempt results in fan-out order. */
   attempts: LeaderAttempt[];
 }
 

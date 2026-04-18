@@ -15,19 +15,29 @@ import type { TpuClient, SendResult } from './tpu-client.js';
 // Public types
 // ---------------------------------------------------------------------------
 
+/** Dependencies injected into {@link sendAndConfirmTpuTransactionFactory}. */
 export interface TpuConfirmFactoryCfg {
+  /** The TPU client used to send the transaction. */
   tpu: TpuClient;
+  /** JSON-RPC client for block-height polling. */
   rpc: Rpc<SolanaRpcApi>;
+  /** WebSocket subscriptions client for signature-status streaming. */
   rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi>;
 }
 
+/** Per-call options for the function returned by {@link sendAndConfirmTpuTransactionFactory}. */
 export interface TpuConfirmOptions {
+  /** Desired confirmation level (e.g. `'confirmed'` or `'finalized'`). */
   commitment: Commitment;
+  /** Optional abort signal to cancel both the send and the confirmation wait. */
   abortSignal?: AbortSignal;
+  /** Block height after which the blockhash is considered expired; obtained from `getLatestBlockhash`. */
   lastValidBlockHeight: bigint;
 }
 
+/** Extends {@link SendResult} with the commitment level used during confirmation. */
 export interface TpuConfirmResult extends SendResult {
+  /** Commitment level at which confirmation was obtained. */
   commitment: Commitment;
 }
 
