@@ -11,7 +11,7 @@ v2 is a standalone factory built on `@solana/kit` 3.x. There is no `Connection` 
 ## Before (v1)
 
 ```ts
-import { TpuConnection } from 'tpu-client';
+import { TpuConnection } from 'solana-tpu-client';
 import { Transaction, Keypair, SystemProgram } from '@solana/web3.js';
 
 const tpu = await TpuConnection.load('https://api.mainnet-beta.solana.com', {
@@ -56,7 +56,7 @@ import {
   createTpuClient,
   sendAndConfirmTpuTransactionFactory,
   ed25519KeyPairFromSolanaSecret,
-} from 'tpu-client';
+} from 'solana-tpu-client';
 
 const rpc = createSolanaRpc('https://api.mainnet-beta.solana.com');
 const rpcSubscriptions = createSolanaRpcSubscriptions(
@@ -138,13 +138,15 @@ await tpu.close();
 
 ## Keeping v1 temporarily
 
-If you need to run v1 alongside v2 during migration, you can alias the packages in your `package.json`:
+If you need to run v1 alongside v2 during migration, you can alias the packages in your `package.json` — v1 continues to live on npm as `tpu-client`, v2 is published under the new name `solana-tpu-client`:
 
 ```json
 {
   "dependencies": {
-    "tpu-client-v1": "npm:tpu-client@^1",
-    "tpu-client": "^2"
+    "tpu-client": "^1",
+    "solana-tpu-client": "^2"
   }
 }
 ```
+
+Import v1 as `from 'tpu-client'` and v2 as `from 'solana-tpu-client'`; side-by-side with no alias trickery.

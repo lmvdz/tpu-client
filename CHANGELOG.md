@@ -7,10 +7,32 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## 2.0.0-alpha.7
+
+### Changed
+- **Package renamed**: `tpu-client` → `solana-tpu-client`. The previous name was ambiguous on npm search (TPU also refers to Google Tensor Processing Units) and didn't surface to Solana developers looking for a TPU submission library. The new name matches the Anza Rust crate naming convention (`solana-tpu-client`).
+- All install snippets + import statements in README, MIGRATION, CHANGELOG, scripts, and tests updated accordingly.
+
+### Migration
+Nothing at runtime changed. If you were on `2.0.0-alpha.6`:
+```diff
+- "tpu-client": "2.0.0-alpha.6"
++ "solana-tpu-client": "2.0.0-alpha.7"
+```
+and:
+```diff
+- import { createTpuClient } from 'tpu-client';
++ import { createTpuClient } from 'solana-tpu-client';
+```
+
+The npm package name is the only surface change. The GitHub repo remains at `lmvdz/tpu-client` for now (renaming the GitHub repo is a separate step that affects existing PR/issue URLs; deferred pending need).
+
+---
+
 ## 2.0.0-alpha.6
 
 ### Fixed — end-user-clean install
-`npm install tpu-client` now Just Works for unstaked and staked clients alike — no `patch-package` setup, no copied patch files, no manual steps.
+`npm install solana-tpu-client` now Just Works for unstaked and staked clients alike — no `patch-package` setup, no copied patch files, no manual steps.
 
 ### How
 - Depends on a patched fork of `@matrixai/quic` pinned via a GitHub URL:

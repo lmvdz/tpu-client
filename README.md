@@ -1,4 +1,4 @@
-# tpu-client
+# solana-tpu-client
 
 TPU-direct transaction submission for `@solana/kit` apps — send transactions straight to upcoming leaders over QUIC, bypassing RPC rate limits and reducing time-to-land.
 
@@ -6,7 +6,7 @@ TPU-direct transaction submission for `@solana/kit` apps — send transactions s
 
 ## What this is
 
-`tpu-client` is a TypeScript library that opens QUIC connections to the next N Solana leader nodes and fans out your signed transaction bytes directly, rather than routing through an RPC `sendTransaction` call. This mirrors what the Solana CLI and the Rust `TpuClient` do under the hood.
+`solana-tpu-client` is a TypeScript library that opens QUIC connections to the next N Solana leader nodes and fans out your signed transaction bytes directly, rather than routing through an RPC `sendTransaction` call. This mirrors what the Solana CLI and the Rust `TpuClient` do under the hood.
 
 **What it solves:**
 
@@ -23,12 +23,12 @@ Built on `@solana/kit` 3.x primitives (no `@solana/web3.js` dependency), `@matri
 
 | Option | Hosted? | Stake-weighted QoS | Extra fees | Notes |
 |---|---|---|---|---|
-| **tpu-client** | No — self-hosted | Yes, via your own staked keypair | None | Pure TS, open source, you control the identity |
+| **solana-tpu-client** | No — self-hosted | Yes, via your own staked keypair | None | Pure TS, open source, you control the identity |
 | **Helius `sendSmartTransaction`** | Yes | Helius handles it | Per-request or subscription | Easiest path if you already use Helius RPC |
 | **Jito bundle endpoint** | Yes | Jito validators only | Tip required | Optimal for MEV / priority ordering within a block |
 | **Triton Jet** | Yes | Triton infrastructure | Subscription | Managed TPU relay with SLA |
 
-Use `tpu-client` when:
+Use `solana-tpu-client` when:
 - You need full control over QoS identity and connection lifecycle.
 - You want landing telemetry per attempt for SLAs or alerting.
 - You are operating your own validator or staking infrastructure and already hold a funded identity keypair.
@@ -41,7 +41,7 @@ Use `tpu-client` when:
 Requires **Node.js ≥ 22.11** (ESM only; native QUIC bindings require a recent Node ABI).
 
 ```bash
-npm install tpu-client @solana/kit @matrixai/quic @peculiar/x509
+npm install solana-tpu-client @solana/kit @matrixai/quic @peculiar/x509
 ```
 
 `@solana/kit`, `@matrixai/quic`, and `@peculiar/x509` are peer dependencies and must appear in your project's `dependencies`.
@@ -77,7 +77,7 @@ import {
   createTpuClient,
   sendAndConfirmTpuTransactionFactory,
   ed25519KeyPairFromSolanaSecret,
-} from 'tpu-client';
+} from 'solana-tpu-client';
 
 // 1. Load your staked identity (64-byte solana-keygen JSON array).
 const secretBytes = new Uint8Array(
@@ -151,7 +151,7 @@ When you pass `identity: CryptoKeyPair` to `createTpuClient`, the library:
 
 ```ts
 import { readFileSync } from 'node:fs';
-import { ed25519KeyPairFromSolanaSecret } from 'tpu-client';
+import { ed25519KeyPairFromSolanaSecret } from 'solana-tpu-client';
 
 const raw = new Uint8Array(
   JSON.parse(readFileSync('/path/to/id.json', 'utf8')) as number[],
@@ -161,7 +161,7 @@ const identity = await ed25519KeyPairFromSolanaSecret(raw);
 
 If you omit `identity`, an ephemeral (unstaked) keypair is generated and an `ephemeral-identity` `TpuEvent` fires. Ephemeral identities are fine for development but will be first-dropped by validators under production load.
 
-> **QUIC-layer fix (2.0.0-alpha.6+):** `@matrixai/quic@2.0.9` has a stream-creation bug that blocks sends against peers that advertise `initial_max_streams_uni: 0` and grant credit via `MAX_STREAMS` frames post-handshake — Agave's unstaked-QoS path (~80% of mainnet leaders). **This release depends on a patched fork** at `github:lmvdz/js-quic#release/tpu-fix` (pulled automatically when you `npm install tpu-client` — no extra steps, no patch files to copy). The fork is `@matrixai/quic@2.0.9` with a ~12-line diff to `dist/QUICStream.js`; native binaries still resolve from upstream's npm packages. Upstream PR: https://github.com/MatrixAI/js-quic/pull/157 — when that merges + releases, we switch back to the canonical package.
+> **QUIC-layer fix (2.0.0-alpha.6+):** `@matrixai/quic@2.0.9` has a stream-creation bug that blocks sends against peers that advertise `initial_max_streams_uni: 0` and grant credit via `MAX_STREAMS` frames post-handshake — Agave's unstaked-QoS path (~80% of mainnet leaders). **This release depends on a patched fork** at `github:lmvdz/js-quic#release/tpu-fix` (pulled automatically when you `npm install solana-tpu-client` — no extra steps, no patch files to copy). The fork is `@matrixai/quic@2.0.9` with a ~12-line diff to `dist/QUICStream.js`; native binaries still resolve from upstream's npm packages. Upstream PR: https://github.com/MatrixAI/js-quic/pull/157 — when that merges + releases, we switch back to the canonical package.
 
 > **Firedancer note:** Firedancer (and its hybrid Frankendancer variant) enforce ALPN — connections without `solana-tpu` are rejected. This library sets ALPN automatically. Firedancer has been handling approximately 20% of leader slots on mainnet.
 
@@ -172,7 +172,7 @@ If you omit `identity`, an ephemeral (unstaked) keypair is generated and an `eph
 Pass `onEvent` to observe all internal state transitions:
 
 ```ts
-import type { TpuEvent } from 'tpu-client';
+import type { TpuEvent } from 'solana-tpu-client';
 
 const tpu = await createTpuClient({
   rpc,
@@ -265,7 +265,7 @@ If you are migrating from the previous `TpuConnection` API (which extended `@sol
 
 ## Reference
 
-All exports from the `tpu-client` package:
+All exports from the `solana-tpu-client` package:
 
 > **Type documentation:** Full JSDoc is emitted to `lib/*.d.ts` during build. Use your IDE's hover/IntelliSense for field-level descriptions.
 
@@ -306,7 +306,7 @@ All exports from the `tpu-client` package:
 If you are hand-rolling a custom QUIC transport (e.g. for testing), `evaluatePinDecision` lets you reuse the cert-pin logic without a live handshake:
 
 ```ts
-import { evaluatePinDecision } from 'tpu-client';
+import { evaluatePinDecision } from 'solana-tpu-client';
 
 // gossipSpki: the 32-byte Ed25519 pubkey bytes from getClusterNodes
 // peerSpki:   the SPKI bytes extracted from the peer's X.509 cert DER
